@@ -1,0 +1,141 @@
+# Example agent showcasing all available config options.
+# Copy this as a starting point and uncomment/adjust as needed.
+
+version: "1.0.0"
+schema: "slack-agents/v1"
+
+slack:
+  bot_token: "{SLACK_BOT_TOKEN}"
+  app_token: "{SLACK_APP_TOKEN}"
+
+# --- Access control -------------------------------------------------------
+# Allow list — only these Slack user IDs can use the agent
+access:
+  type: slack_agents.access.allow_list
+  userid_list:
+    - U1234567890
+    - U9876543210
+  deny_message: "You don't have access to this agent. Ask in #help-infra to request access."
+
+# Allow all users
+# access:
+#   type: slack_agents.access.allow_all
+
+# --- LLM -----------------------------------------------------------------
+# Anthropic (Claude)
+llm:
+  type: slack_agents.llm.anthropic
+  model: claude-sonnet-4-6
+  api_key: "{ANTHROPIC_API_KEY}"
+  max_tokens: 4096
+  max_input_tokens: 200000
+
+# OpenAI
+# llm:
+#   type: slack_agents.llm.openai
+#   model: gpt-4.1
+#   api_key: "{OPENAI_API_KEY}"
+#   max_tokens: 4096
+#   max_input_tokens: 128000
+
+# OpenAI-compatible provider (Mistral, Ollama, etc.)
+# llm:
+#   type: slack_agents.llm.openai
+#   model: mistral-small-latest
+#   api_key: "{MISTRAL_API_KEY}"
+#   base_url: "https://api.mistral.ai/v1"
+#   max_tokens: 4096
+#   max_input_tokens: 32000
+#   input_cost_per_million: 0.1    # optional — USD per 1M input tokens
+#   output_cost_per_million: 0.3   # optional — USD per 1M output tokens
+
+# --- Storage --------------------------------------------------------------
+# SQLite (in-memory — conversations lost on restart)
+storage:
+  type: slack_agents.storage.sqlite
+  path: ":memory:"
+  # path: "./data/conversations.db"  # file-based persistence
+
+# PostgreSQL (persistent)
+# storage:
+#   type: slack_agents.storage.postgres
+#   url: "postgresql://user:{POSTGRES_PASSWORD}@localhost:5432/slack_agents"
+
+# --- Tools ----------------------------------------------------------------
+tools:
+  # MCP server over HTTP
+  deepwiki:
+    type: slack_agents.tools.mcp_http
+    url: "https://mcp.deepwiki.com/mcp"
+    allowed_functions: [".*"]                # regex — allow all tools
+
+  # MCP server with auth headers, filtered tools, and custom init retries
+  # internal-api:
+  #   type: slack_agents.tools.mcp_http
+  #   url: "https://mcp.internal.example.com/mcp"
+  #   headers:
+  #     Authorization: "Bearer {MCP_API_TOKEN}"
+  #   allowed_functions:
+  #     - "search_.*"                        # regex — only search tools
+  #     - "get_document"                     # exact match
+  #   init_retries: [5, 10, 30]             # seconds between retries at startup (default: [5, 10, 30])
+
+  # Built-in file import (PDF, DOCX, XLSX, PPTX, text, images)
+  import-documents:
+    type: slack_agents.tools.file_importer
+    allowed_functions: [".*"]
+
+  # Built-in document export (PDF, DOCX, XLSX, CSV, PPTX)
+  export-documents:
+    type: slack_agents.tools.file_exporter
+    allowed_functions:
+      - "export_pdf"
+      - "export_docx"
+      # - "export_xlsx"
+      # - "export_csv"
+      # - "export_pptx"
+
+  # Slack canvases (create, read, edit, list, delete)
+  # Requires Slack scopes: canvases:read, canvases:write, files:read
+  # canvas:
+  #   type: slack_agents.tools.canvas
+  #   bot_token: "{SLACK_BOT_TOKEN}"
+  #   allowed_functions: [".*"]
+
+  # Per-user memory backed by Slack canvases
+  # Remembers user preferences and context across conversations.
+  # Requires Slack scopes: canvases:read, canvases:write, files:read
+  # user-context:
+  #   type: slack_agents.tools.user_context
+  #   bot_token: "{SLACK_BOT_TOKEN}"
+  #   max_tokens: 1000           # limit on context size
+  #   allowed_functions: [".*"]
+
+# --- Observability --------------------------------------------------------
+# observability:
+#   endpoints:
+#     - type: otlp
+#       endpoint: "https://otel.example.com/v1/traces"
+#       headers:
+#         - key: Authorization
+#           value: "Bearer {OTEL_API_KEY}"
+#       attributes:
+#         environment: production
+#         team: platform
+#    - type: otlp
+#      endpoint: "{LANGFUSE_HOST}/api/public/otel/v1/traces"
+#      basic_auth:
+#        user: "{LANGFUSE_PUBLIC_KEY}"
+#        password: "{LANGFUSE_SECRET_KEY}"
+#      attributes:
+#        trace_name: "langfuse.trace.name"
+#        user_id: "langfuse.user.id"
+#        session_id: "langfuse.session.id"
+#        version: "langfuse.version"
+#        observation_type: "langfuse.observation.type"
+#        input: "langfuse.observation.input"
+#        output: "langfuse.observation.output"
+#        model: "langfuse.observation.model.name"
+#        input_tokens: "gen_ai.usage.input_tokens"
+#        output_tokens: "gen_ai.usage.output_tokens"
+#        usage: "langfuse.observation.usage_details"

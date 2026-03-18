@@ -1,0 +1,42 @@
+# test with:
+# - what do you know about the project "marisa-trie" (need a small project to not overflow llm context)
+# - can you export that to pdf?
+
+version: "1.0.0"
+schema: "slack-agents/v1"
+
+slack:
+  bot_token: "{SLACK_BOT_TOKEN}"
+  app_token: "{SLACK_APP_TOKEN}"
+
+access:
+  type: slack_agents.access.allow_all
+
+llm:
+  type: slack_agents.llm.anthropic
+  model: claude-sonnet-4-6
+  api_key: "{ANTHROPIC_API_KEY}"
+  max_tokens: 4096
+  max_input_tokens: 200000
+
+storage:
+  type: slack_agents.storage.sqlite
+  path: ":memory:"
+
+tools:
+  import-documents:
+    type: slack_agents.tools.file_importer
+    allowed_functions: [".*"]
+  export-documents:
+    type: slack_agents.tools.file_exporter
+    allowed_functions:
+      - "export_pdf"
+      - "export_docx"
+  slack-canvaes:
+    type: slack_agents.tools.canvas
+    bot_token: "{SLACK_BOT_TOKEN}"
+    allowed_functions: [".*"]
+  deepwiki:
+    type: slack_agents.tools.mcp_http
+    url: "https://mcp.deepwiki.com/mcp"
+    allowed_functions: [".*"]
