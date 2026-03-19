@@ -283,13 +283,13 @@ If you're an AI agent or coding assistant, see [`llms-full.txt`](https://raw.git
 
 ## Related Projects
 
-If this framework isn't the right fit, here are some good alternatives:
+Other projects in this space:
 
 - **[Bolt for Python](https://github.com/slackapi/bolt-python)** — The official Slack SDK. python-slack-agents uses it internally. Use Bolt directly if you want full control over Slack interactions without an agent abstraction.
-- **[Slack Machine](https://github.com/DonDebonair/slack-machine)** — A mature Slack bot framework with a great plugin system for traditional chatops. No AI/LLM layer, but solid if you don't need agents.
-- **[bolt-python-ai-chatbot](https://github.com/slack-samples/bolt-python-ai-chatbot)** — Official Slack sample app for AI chatbots. Good starting point if you want to build from scratch rather than use a framework.
-- **[OpenAI Agents SDK](https://github.com/openai/openai-agents-python)**, **[Pydantic AI](https://github.com/pydantic/pydantic-ai)**, **[MCP Agent](https://github.com/lastmile-ai/mcp-agent)** — Powerful general-purpose agent frameworks. None include Slack integration, but if you already use one and want to wire it up to Slack yourself, they're excellent.
-- **[slack-mcp-client](https://github.com/tuannvm/slack-mcp-client)** — A Go application bridging Slack and MCP servers. Deployed app rather than a library, but well-built if you prefer Go.
+- **[bolt-python-ai-chatbot](https://github.com/slack-samples/bolt-python-ai-chatbot)** — Official Slack sample app for AI chatbots. A starting point if you want to build from scratch rather than use a framework.
+- **[bolt-python-assistant-template](https://github.com/slack-samples/bolt-python-assistant-template)** — Official Slack template for building Agents & Assistants with Bolt and OpenAI.
+- **[langgraph-messaging-integrations](https://github.com/langchain-ai/langgraph-messaging-integrations)** — Connects LangGraph agents to Slack and other messaging platforms.
+- **[slack-mcp-client](https://github.com/tuannvm/slack-mcp-client)** — A Go application bridging Slack and MCP servers. Deployed app rather than a library.
 
 ## Disclaimer
 

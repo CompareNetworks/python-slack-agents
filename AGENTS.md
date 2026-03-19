@@ -113,6 +113,8 @@ The PyPI deployment requires manual approval in the GitHub Actions UI. Do NOT pu
 
 ## Style
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for full coding and commit conventions.
+
 - Python 3.12+, line length 100
 - Ruff rules: E, F, I (errors, pyflakes, isort)
 - Keep it simple. Minimal abstractions, no unnecessary indirection.
