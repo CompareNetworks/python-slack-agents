@@ -2,6 +2,16 @@
 
 All commands are available as `slack-agents <command>`.
 
+## init
+
+Scaffold a new project in the current directory.
+
+```bash
+slack-agents init <project_name>
+```
+
+Creates `pyproject.toml`, `src/<package>/`, `.env.example`, and a `hello-world` agent. Existing files are skipped with a warning.
+
 ## run
 
 Start a Slack agent.

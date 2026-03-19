@@ -1,0 +1,1147 @@
+# python-slack-agents: Complete Reference
+
+> A Python framework for deploying AI agents as Slack bots.
+> Each agent is a YAML config and a system prompt — pick your LLM, connect some MCP tools, and `slack-agents run`.
+
+- **Package:** `pip install python-slack-agents`
+- **CLI entry point:** `slack-agents`
+- **Python:** >= 3.12
+- **License:** Apache 2.0
+- **Source:** https://github.com/CompareNetworks/python-slack-agents
+
+## How to read this document
+
+This file is a concatenation of all documentation files, designed to be consumed in a single read.
+The sections below correspond to individual doc files in the `docs/` directory.
+
+### Key concepts
+
+- **Config-driven:** each agent is a directory with `config.yaml` + `system_prompt.txt`. All behavior is configured in YAML.
+- **Plugin pattern:** every pluggable component (LLM, storage, tools, access) uses a `type` field with a dotted Python import path pointing to a module with a `Provider` class. All other config keys are passed as kwargs to `Provider.__init__`.
+- **Two kinds of tool providers:** `BaseToolProvider` (tools the LLM calls) and `BaseFileImporterProvider` (file handlers the *framework* calls automatically — invisible to the LLM). Both are configured under `tools:` in config.yaml.
+- **Environment variables:** `{ENV_VAR}` patterns in config values are resolved from environment variables at startup.
+
+---
+
+# Setup
+
+## Prerequisites
+
+- Python 3.12+
+- A Slack workspace (all plans supported, including free)
+- API key for your LLM provider (Anthropic and/or OpenAI)
+
+## Installation
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+```
+
+## Environment Variables
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env` with your tokens:
+
+```
+SLACK_BOT_TOKEN=xoxb-...  # see below
+SLACK_APP_TOKEN=xapp-...  # see below
+ANTHROPIC_API_KEY=sk-ant-...
+```
+
+## Creating a Slack App
+
+1. Go to [api.slack.com/apps](https://api.slack.com/apps)
+2. Create a new app from the manifest in `docs/slack-app-manifest.json`
+- Update 4 placeholders starting with ** for names and descriptions
+- Settings > Basic Information > App-Level Tokens > Generate Tokens and Scopes
+  - token name: "slack-agents-app-token"
+  - add scope: add "connections:write"
+  - click "Generate"
+  - Copy: App Token (eg, SLACK_APP_TOKEN=xapp-...)
+- Settings > Install App
+  - Copy: Bot User OAuth Token (eg, SLACK_BOT_TOKEN=xoxb-...)
+3. If App does not appeat in your Slack client:
+  - ... > Tools > Apps > (search by name and add the app)
+
+## Download Fonts
+
+PDF generation requires DejaVu Sans for Unicode support:
+
+```bash
+python -m slack_agents.scripts.download_fonts
+```
+
+This downloads `DejaVuSans.ttf` and `DejaVuSans-Bold.ttf` into `fonts/` (~700KB total). Without these fonts, PDF generation falls back to Helvetica (latin-1 only).
+
+## Running an Agent
+
+```bash
+slack-agents run agents/hello-world
+```
+
+## Optional: PostgreSQL
+
+For conversation persistence via PostgreSQL, update your agent's `config.yaml`:
+
+```yaml
+storage:
+  type: slack_agents.storage.postgres
+  url: "{DATABASE_URL}"
+```
+
+Set `DATABASE_URL` in your `.env` file.
+
+---
+
+# Creating an Agent
+
+Each agent lives in its own directory with two files:
+
+## Directory Structure
+
+```
+agents/my-agent/
+├── config.yaml
+└── system_prompt.txt
+```
+
+The directory name (e.g. `my-agent`) is used by the CLI and as the default Docker image name. It has no effect on how the agent appears in Slack — the bot's display name is set when you create the Slack app and can be changed anytime in the [Slack app settings](https://api.slack.com/apps) under "App Home".
+
+## config.yaml
+
+```yaml
+version: "1.0.0"
+schema: "slack-agents/v1"
+
+slack:
+  bot_token: "{SLACK_BOT_TOKEN}"
+  app_token: "{SLACK_APP_TOKEN}"
+
+access:
+  type: slack_agents.access.allow_all
+
+llm:
+  type: slack_agents.llm.anthropic
+  model: claude-sonnet-4-6
+  api_key: "{ANTHROPIC_API_KEY}"
+  max_tokens: 4096
+  max_input_tokens: 200000
+
+storage:
+  type: slack_agents.storage.sqlite
+  path: ":memory:"
+
+tools:
+  import-documents:
+    type: slack_agents.tools.file_importer
+    allowed_functions: [".*"]
+  my-mcp-server:
+    type: slack_agents.tools.mcp_http
+    url: "https://my-server.example.com/mcp"
+    allowed_functions: [".*"]
+```
+
+### version (required)
+
+A user-controlled string tracking changes to the agent's capabilities, system prompt, or configuration. We recommend semver (e.g. `"1.0.0"`, `"2.3.1"`) but any string is valid — the framework does not interpret it. The usage footer in Slack shows this version string instead of the model name. This version is also used as the Docker image tag when building with `slack-agents build-docker`.
+
+### schema (required)
+
+Identifies the config format version: `"slack-agents/v1"`. The framework uses this to determine if it can parse the config. If the config uses a schema newer than the installed version, startup fails with a clear error.
+
+All `{ENV_VAR}` patterns are resolved from environment variables at startup.
+
+## system_prompt.txt
+
+Plain text file with the agent's system prompt:
+
+```
+You are a helpful assistant that specializes in...
+```
+
+## Running
+
+```bash
+slack-agents run agents/my-agent
+```
+
+## Slack App Setup
+
+Each agent needs its own Slack app. Use the manifest in `docs/slack-app-manifest.json` as a starting point.
+
+Key permissions needed:
+- `app_mentions:read` — respond to @mentions
+- `chat:write` — send messages
+- `im:history`, `im:read`, `im:write` — handle DMs
+- `files:read`, `files:write` — file attachments
+- Socket Mode must be enabled
+
+---
+
+# LLM Providers
+
+## Built-in Providers
+
+Two providers ship with the framework: `slack_agents.llm.anthropic` (Claude) and `slack_agents.llm.openai` (OpenAI and compatible APIs).
+
+### OpenAI-compatible providers
+
+Many providers expose an OpenAI-compatible API (Mistral, Groq, Together, Ollama, vLLM, etc.). Use the built-in `slack_agents.llm.openai` provider with `base_url` to point at them:
+
+```yaml
+llm:
+  type: slack_agents.llm.openai
+  model: mistral-small-latest
+  api_key: "{MISTRAL_API_KEY}"
+  base_url: "https://api.mistral.ai/v1"
+  max_tokens: 4096
+  max_input_tokens: 32000
+  input_cost_per_million: 0.1   # optional — USD per 1M input tokens
+  output_cost_per_million: 0.3  # optional — USD per 1M output tokens
+```
+
+`input_cost_per_million` and `output_cost_per_million` are optional. When provided, they're used for cost estimation. When omitted, the built-in cost table is checked (covers native OpenAI models). If neither matches, cost estimation returns `None`.
+
+## Adding a Custom Provider
+
+LLM providers are Python modules that export a `Provider` class extending `BaseLLMProvider`.
+
+### Example
+
+```python
+# my_llm/gemini.py
+from slack_agents.llm.base import BaseLLMProvider, LLMResponse, Message, StreamEvent
+
+class Provider(BaseLLMProvider):
+    def __init__(self, model: str, api_key: str, max_tokens: int, max_input_tokens: int):
+        self.model = model
+        self.max_tokens = max_tokens
+        self.max_input_tokens = max_input_tokens
+        # Initialize your client here
+
+    def estimate_cost(self, input_tokens, output_tokens,
+                      cache_creation_input_tokens=0, cache_read_input_tokens=0):
+        # Return estimated cost in USD, or None
+        return None
+
+    async def complete(self, messages, system_prompt="", tools=None):
+        # Return LLMResponse
+        ...
+
+    async def stream(self, messages, system_prompt="", tools=None):
+        # Yield StreamEvent objects
+        ...
+```
+
+### Configuration
+
+```yaml
+llm:
+  type: my_llm.gemini
+  model: gemini-2.0-flash
+  api_key: "{GEMINI_API_KEY}"
+  max_tokens: 4096
+  max_input_tokens: 200000
+```
+
+### Key Points
+
+- Internal message format is Anthropic-style (content as list of typed blocks)
+- Convert to your provider's format at the boundary (see `openai.py` for an example)
+- `stream()` must yield `StreamEvent` objects with types: `text_delta`, `tool_use_start`, `tool_use_delta`, `tool_use_end`, `message_end`
+- `estimate_cost()` returns USD cost or None if unknown
+
+---
+
+# Tools
+
+There are two kinds of tool providers, both configured under `tools:` in `config.yaml`:
+
+- **Tool providers** (`BaseToolProvider`) — tools the LLM can call during a conversation (e.g. search, export a PDF, run a calculation)
+- **File importer providers** (`BaseFileImporterProvider`) — handlers that process files attached to Slack messages before they reach the LLM (e.g. extract text from a PDF, parse an Excel spreadsheet)
+
+Both use the same `allowed_functions` regex filtering and are loaded as Python modules with a `Provider` class.
+
+## Tool Providers
+
+Tool providers give the LLM callable tools. Extend `BaseToolProvider`:
+
+```python
+# my_tools/calculator.py
+from slack_agents.tools.base import BaseToolProvider, ToolResult
+
+class Provider(BaseToolProvider):
+    def __init__(self, allowed_functions: list[str]):
+        super().__init__(allowed_functions)
+
+    def _get_all_tools(self) -> list[dict]:
+        return [
+            {
+                "name": "add",
+                "description": "Add two numbers",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "a": {"type": "number"},
+                        "b": {"type": "number"},
+                    },
+                    "required": ["a", "b"],
+                },
+            }
+        ]
+
+    async def call_tool(self, name, arguments, user_context, storage) -> ToolResult:
+        if name == "add":
+            result = arguments["a"] + arguments["b"]
+            return {"content": str(result), "is_error": False, "files": []}
+        return {"content": f"Unknown tool: {name}", "is_error": True, "files": []}
+```
+
+### Key points
+
+- `_get_all_tools()` returns tool definitions in Anthropic API format
+- `allowed_functions` filtering is handled by the base class
+- `call_tool(name, arguments, user_context, storage)` returns a `ToolResult` (`{"content": str, "is_error": bool, "files": list[OutputFile]}`)
+- Files in the response are uploaded to Slack automatically
+- `initialize()` and `close()` are optional lifecycle hooks
+
+## File Importer Providers
+
+File importer providers process files that users attach to Slack messages. They are invisible to the LLM — the framework calls them automatically to convert files into content the LLM can understand.
+
+Extend `BaseFileImporterProvider`:
+
+```python
+# my_tools/csv_importer.py
+from slack_agents import InputFile
+from slack_agents.tools.base import BaseFileImporterProvider, ContentBlock, FileImportToolException
+
+class Provider(BaseFileImporterProvider):
+    def _get_all_tools(self) -> list[dict]:
+        return [
+            {
+                "name": "import_csv",
+                "mimes": {"text/csv"},
+                "max_size": 5_000_000,
+            }
+        ]
+
+    async def call_tool(self, name, arguments, user_context, storage) -> ContentBlock:
+        if name == "import_csv":
+            text = arguments["file_bytes"].decode("utf-8", errors="replace")
+            return {"type": "text", "text": f"[File: {arguments['filename']}]\n\n{text}"}
+        raise FileImportToolException(f"Unknown handler: {name}")
+```
+
+### Tool manifest fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | `str` | Handler name, matched against `allowed_functions` (e.g. `import_csv`) |
+| `mimes` | `set[str]` | MIME types this handler processes |
+| `max_size` | `int` | Maximum file size in bytes |
+
+### call_tool arguments
+
+`call_tool()` receives an `InputFile` dict (with keys `file_bytes`, `mimetype`, `filename`) as the `arguments` parameter, plus `user_context` and `storage`. Return a `ContentBlock` dict that will be included in the user message sent to the LLM:
+
+- Text: `{"type": "text", "text": "..."}`
+- Image: `{"type": "image", "source": {"type": "base64", "media_type": "...", "data": "..."}}`
+- Raise `FileImportToolException` if extraction fails (the framework catches this and logs the error)
+
+### Built-in handlers
+
+The built-in provider (`slack_agents.tools.file_importer`) handles PDF, DOCX, XLSX, PPTX, plain text, and images.
+
+## MCP over HTTP
+
+`slack_agents.tools.mcp_http` connects to any MCP server over HTTP. Tools are auto-discovered at startup.
+
+```yaml
+tools:
+  my-mcp-server:
+    type: slack_agents.tools.mcp_http
+    url: "https://my-server.example.com/mcp"
+    headers:
+      Authorization: "Bearer {MCP_API_TOKEN}"
+    allowed_functions:
+      - "search_.*"
+      - "get_document"
+    init_retries: [5, 10, 30]
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `url` | `str` | required | MCP server endpoint |
+| `headers` | `dict` | `{}` | HTTP headers sent with every request |
+| `allowed_functions` | `list[str]` | required | Regex patterns to filter discovered tools |
+| `init_retries` | `list[int]` | `[5, 10, 30]` | Seconds to wait between connection retries at startup. The server is tried once immediately, then once after each delay. Set to `[]` to disable retries. |
+
+All MCP tool providers are initialized in parallel at startup. If any provider fails to connect after exhausting its retries, the agent exits with an error.
+
+## Configuration
+
+Both types are configured the same way in `config.yaml`:
+
+```yaml
+tools:
+  calculator:
+    type: my_tools.calculator
+    allowed_functions: [".*"]
+  import-documents:
+    type: slack_agents.tools.file_importer
+    allowed_functions: [".*"]
+```
+
+The module must be importable from your Python path.
+
+---
+
+# Adding a Storage Backend
+
+Storage backends are Python modules that export a `Provider` class extending `BaseStorageProvider`.
+
+## Two-level API
+
+### 1. Required: 6 abstract primitives
+
+Every backend **must** implement these. They are sufficient for a fully working system because all domain methods have default implementations built on them.
+
+| Method | Description |
+|--------|-------------|
+| `get(namespace, key)` | Key-value read |
+| `set(namespace, key, value)` | Key-value upsert |
+| `delete(namespace, key)` | Key-value delete |
+| `append(namespace, key, item)` | Append to an ordered list, returns item ID |
+| `get_list(namespace, key)` | Read an ordered list |
+| `query(namespace, filters)` | Equality-filter scan |
+
+### 2. Optional: domain method overrides
+
+Relational or indexed backends can override these for better performance:
+
+- `get_or_create_conversation(...)` — conversation lifecycle
+- `has_conversation(...)` — existence check
+- `create_message(...)` — message creation
+- `get_message_blocks(...)` — fetch blocks grouped by message
+- `append_text_block(...)`, `append_file_block(...)`, `append_tool_block(...)`, `append_usage_block(...)` — block persistence
+- `get_tool_call(tool_call_id)` — indexed tool-call lookup
+- `upsert_heartbeat(...)`, `get_heartbeat(...)` — agent liveness
+- `get_conversations_for_export(...)`, `get_messages_with_blocks(...)` — export queries
+- `supports_export` property — whether export is available
+
+The built-in PostgreSQL and SQLite providers override all of these with proper SQL.
+
+## Minimal example: Redis
+
+A Redis backend only needs the 6 primitives. All conversation management works automatically via the default implementations.
+
+```python
+# my_storage/redis.py
+from slack_agents.storage.base import BaseStorageProvider
+
+class Provider(BaseStorageProvider):
+    def __init__(self, url: str):
+        self._url = url
+
+    async def initialize(self):
+        # Connect to Redis
+        ...
+
+    async def get(self, namespace, key):
+        ...
+
+    async def set(self, namespace, key, value):
+        ...
+
+    async def delete(self, namespace, key):
+        ...
+
+    async def append(self, namespace, key, item):
+        ...
+
+    async def get_list(self, namespace, key):
+        ...
+
+    async def query(self, namespace, filters):
+        ...
+
+    async def close(self):
+        ...
+```
+
+For better performance you could override specific domain methods — for example, `get_tool_call` with a Redis hash lookup by `tool_call_id` instead of scanning all blocks.
+
+## Configuration
+
+```yaml
+storage:
+  type: my_storage.redis
+  url: "{REDIS_URL}"
+```
+
+## Key points
+
+- Storage providers handle all persistence — the `ConversationManager` is a thin delegation layer
+- `initialize()` is called at startup, `close()` at shutdown
+- Non-relational backends only need the 6 abstract primitives
+- Relational backends (PostgreSQL, SQLite) override domain methods with optimized SQL
+
+---
+
+# Access Control
+
+Control which Slack users can interact with each agent. The `access` key is required in every agent's `config.yaml`.
+
+## Configuration
+
+### Allow all users
+
+```yaml
+access:
+  type: slack_agents.access.allow_all
+```
+
+### Allow list
+
+Restrict access to specific Slack user IDs:
+
+```yaml
+access:
+  type: slack_agents.access.allow_list
+  userid_list:
+    - U1234567890
+    - U9876543210
+  deny_message: "You don't have access to this agent. Ask in #help-infra to request access."
+```
+
+The `deny_message` is shown as an ephemeral Slack message to users who are denied access.
+
+## Writing a Custom Provider
+
+Create a module with a `Provider` class that extends `BaseAccessProvider`:
+
+```python
+# my_package/access/ldap.py
+from slack_agents import UserContext
+from slack_agents.access.base import (
+    AccessDenied,
+    AccessGranted,
+    BaseAccessProvider,
+)
+
+
+class Provider(BaseAccessProvider):
+    def __init__(self, *, server: str, group: str) -> None:
+        self._server = server
+        self._group = group
+
+    async def check_access(self, *, context: UserContext) -> AccessGranted:
+        # Look up context["user_id"] in your LDAP directory
+        # and check group membership
+        if is_member:
+            return AccessGranted()
+        raise AccessDenied(f"You need to be in the {self._group} group.")
+```
+
+`check_access` returns `AccessGranted` on success and raises `AccessDenied` on denial. The exception message is shown to the user as an ephemeral Slack message.
+
+`UserContext` and `AccessGranted` are `TypedDict`s. `UserContext` contains:
+- `user_id` — the user ID (required)
+- `user_name` — display name (optional)
+- `user_handle` — user handle (optional)
+- `channel_id` — the channel ID (optional)
+- `channel_name` — the channel name (optional)
+
+Then reference it in config:
+
+```yaml
+access:
+  type: my_package.access.ldap
+  server: ldap://ldap.example.com
+  group: agents-users
+```
+
+Any extra keys beyond `type` are passed as keyword arguments to the `Provider` constructor.
+
+---
+
+# Canvas Tool
+
+The canvas tool lets your agent create, read, update, list, and delete [Slack canvases](https://slack.com/features/canvas) — rich documents that live inside Slack. It exposes a simple file-like API: no section IDs or low-level operations needed.
+
+## Setup
+
+### 1. Add Slack scopes
+
+In your Slack app settings (**OAuth & Permissions → Scopes → Bot Token Scopes**), add:
+
+| Scope | Purpose |
+|-------|---------|
+| `canvases:read` | Read canvas content and list canvases |
+| `canvases:write` | Create, update, delete canvases and manage access |
+| `files:read` | List canvases and read content (uses `files.list` / `files.info` APIs) |
+
+After adding scopes, reinstall the app to your workspace.
+
+### 2. Configure the tool
+
+Add the canvas tool to your agent's `config.yaml`:
+
+```yaml
+tools:
+  canvas:
+    type: slack_agents.tools.canvas
+    bot_token: "{SLACK_BOT_TOKEN}"
+    allowed_functions: [".*"]   # all canvas tools
+```
+
+To expose only specific tools:
+
+```yaml
+    allowed_functions:
+      - "canvas_create"
+      - "canvas_get"
+      - "canvas_update"
+      - "canvas_list"
+```
+
+## Slack plan requirements
+
+- **Free plans**: 1 canvas per channel/DM. `canvas_create` requires `channel_id`.
+- **Paid plans** (Pro, Business+, Enterprise Grid): Unlimited canvases. `channel_id` is optional.
+
+## Canvas content format
+
+Canvas content is **markdown**. Supported elements:
+
+- Headings (`#`, `##`, `###`)
+- Bullet and numbered lists
+- Tables
+- Code blocks
+- Block quotes
+- Links
+- Mentions (`<@U1234567890>`)
+- Unfurls / embeds (`![](URL)`)
+
+Block Kit is **not** supported in canvases.
+
+## Available tools
+
+| Tool | Description |
+|------|-------------|
+| `canvas_create` | Create a canvas with title + content. Optional `channel_id` to share it. |
+| `canvas_get` | Get a canvas by ID. Returns title, full markdown content, and permalink. |
+| `canvas_update` | Update a canvas — replace content, rename title, or both. |
+| `canvas_delete` | Permanently delete a canvas. |
+| `canvas_list` | List canvases visible to the bot. Optional `channel_id` filter. |
+| `canvas_access_get` | Get sharing/access info for a canvas. |
+| `canvas_access_add` | Grant read/write/owner access to users or channels. |
+| `canvas_access_remove` | Remove access for users or channels. |
+
+## Example usage
+
+**Create a canvas in a channel:**
+> "Create a canvas in #project-updates titled 'Q1 Roadmap' with our milestone list"
+
+**Read and update a canvas:**
+> "Get the canvas F12345 and update it with the latest status"
+
+**Share a canvas with another team:**
+> "Give the #design channel write access to canvas F12345"
+
+---
+
+# User Context (Per-User Memory)
+
+The user context tool gives each user a personal Slack canvas that stores their preferences and context across conversations. The agent checks it at the start of every conversation to personalize responses, and offers to save important context when users share preferences or corrections.
+
+Users can also edit their canvas directly in Slack to add or update preferences.
+
+## Setup
+
+### 1. Add Slack scopes
+
+In your Slack app settings (**OAuth & Permissions → Scopes → Bot Token Scopes**), add:
+
+| Scope | Purpose |
+|-------|---------|
+| `canvases:read` | Read the user's context canvas |
+| `canvases:write` | Create and update user context canvases |
+| `files:read` | Read canvas content (uses `files.info` API) |
+
+These are the same scopes required by the [canvas tool](canvas.md). After adding scopes, reinstall the app to your workspace.
+
+### 2. Configure the tool
+
+Add the user-context tool to your agent's `config.yaml`:
+
+```yaml
+tools:
+  user-context:
+    type: slack_agents.tools.user_context
+    bot_token: "{SLACK_BOT_TOKEN}"
+    max_tokens: 1000           # limit on context size
+    allowed_functions: [".*"]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `bot_token` | *(required)* | Slack bot token with canvas scopes |
+| `max_tokens` | `1000` | Maximum token budget for user context |
+| `allowed_functions` | *(required)* | Regex patterns for which tools to expose |
+
+## How it works
+
+1. **At conversation start**, the agent calls `get_user_context` to load the user's saved preferences.
+2. **During conversation**, if the user shares preferences or corrections worth remembering, the agent offers to save them via `set_user_context`.
+3. **Canvas creation is lazy** — no canvas is created until the first `set_user_context` call. The canvas is titled `"{agent_name} ({user_name})"` and the user is granted write access.
+4. **Users can edit directly** — the canvas is a regular Slack canvas that users can open and edit in Slack at any time.
+
+## Available tools
+
+| Tool | Params | Description |
+|------|--------|-------------|
+| `get_user_context` | *(none — uses conversation context)* | Load the user's saved context. Returns `{content, permalink}` or empty content. |
+| `set_user_context` | `agent_name`, `content` | Save/replace the user's context. Creates the canvas on first use. |
+
+## Storage
+
+Canvas IDs are stored using the agent's storage backend with namespace `user_context_canvas`. The storage key includes the bot user ID to avoid collisions when multiple agents share a database.
+
+## Example interaction
+
+> **User:** I prefer concise bullet-point answers, not long paragraphs.
+>
+> **Agent:** Got it! Would you like me to save that preference so I remember it in future conversations?
+>
+> **User:** Yes please.
+>
+> **Agent:** Saved your preference. You can also edit it directly anytime:
+> https://slack.com/docs/T.../F...
+
+---
+
+# CLI Reference
+
+All commands are available as `slack-agents <command>`.
+
+## init
+
+Scaffold a new project in the current directory.
+
+```bash
+slack-agents init <project_name>
+```
+
+Creates `pyproject.toml`, `src/<package>/`, `.env.example`, and a `hello-world` agent. Existing files are skipped with a warning.
+
+## run
+
+Start a Slack agent.
+
+```bash
+slack-agents run agents/<name>
+```
+
+Connects to Slack via Socket Mode, initializes storage and tools, and begins handling messages.
+
+## healthcheck
+
+Check whether an agent's WebSocket connection is healthy.
+
+```bash
+slack-agents healthcheck agents/<name>
+```
+
+Reads the heartbeat timestamp from storage (written every 10s by the agent). Exits 0 if the heartbeat is fresh (<60s), exits 1 otherwise.
+
+Requires persistent storage (file-based SQLite or PostgreSQL). Designed for use as a Kubernetes liveness probe or similar health check.
+
+## export-conversations
+
+Export stored conversations to HTML.
+
+```bash
+slack-agents export-conversations agents/<name> --format=html [options]
+```
+
+Options:
+
+| Flag | Description |
+|------|-------------|
+| `--format` | Export format (required, currently: `html`) |
+| `--handle` | Filter by Slack user handle |
+| `--date-from` | Filter start datetime (ISO format with timezone, e.g. `2026-01-01T00:00:00+00:00`) |
+| `--date-to` | Filter end datetime (ISO format with timezone) |
+| `--output` | Output directory (default: `./export-<agent-name>`) |
+
+Requires persistent storage (file-based SQLite or PostgreSQL).
+
+## export-usage
+
+Export per-conversation usage data as CSV. One row per conversation with aggregated token counts, cost, and metadata.
+
+```bash
+slack-agents export-usage agents/<name> --format=csv --output=usage.csv [options]
+```
+
+Options:
+
+| Flag | Description |
+|------|-------------|
+| `--format` | Export format (required, currently: `csv`) |
+| `--handle` | Filter by Slack user handle |
+| `--date-from` | Filter start datetime (ISO format with timezone, e.g. `2026-01-01T00:00:00+00:00`) |
+| `--date-to` | Filter end datetime (ISO format with timezone) |
+| `--output` | Output CSV file path (required) |
+
+Requires persistent storage (file-based SQLite or PostgreSQL).
+
+## build-docker
+
+Build a Docker image for an agent.
+
+```bash
+slack-agents build-docker agents/<name> [options]
+```
+
+Options:
+
+| Flag | Description |
+|------|-------------|
+| `--push REGISTRY` | Push image to registry after building (e.g. `registry.example.com`) |
+| `--image-name NAME` | Custom image name (default: `slack-agents-<agent-dir-name>`) |
+| `--platform` | Target platform (default: `linux/amd64`) |
+
+The image tag is `<image-name>:<version>`, where version comes from `config.yaml`. The default image name is `slack-agents-<agent-dir-name>`. When `--push` is provided, the registry is prepended.
+
+---
+
+# Observability
+
+Agents can export traces via [OpenTelemetry](https://opentelemetry.io/) (OTLP/HTTP). This works with any OTLP-compatible backend: Langfuse, Jaeger, Datadog, Grafana Tempo, etc.
+
+Observability is configured per-agent in `config.yaml`. If the `observability` section is omitted, tracing is disabled.
+
+## Configuration
+
+Add an `observability` section to your agent's `config.yaml`:
+
+```yaml
+observability:
+  endpoints:
+    - type: otlp
+      endpoint: "https://otel-collector.internal:4318/v1/traces"
+      headers:
+        - key: Authorization
+          value: "Bearer {OTEL_TOKEN}"
+      attributes:
+        trace_name: "my.trace.name"
+        user_id: "enduser.id"
+        model: "gen_ai.response.model"
+        input_tokens: "gen_ai.usage.input_tokens"
+        output_tokens: "gen_ai.usage.output_tokens"
+```
+
+### Endpoint fields
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `type` | yes | Endpoint type (currently `otlp`) |
+| `endpoint` | yes | OTLP/HTTP endpoint URL |
+| `headers` | no | List of `{key, value}` headers sent with each export |
+| `basic_auth` | no | `{user, password}` — auto-constructs a `Basic` auth header |
+| `attributes` | no | Semantic key to OTEL attribute name mapping (see below) |
+
+### Attribute mapping
+
+The `attributes` dict maps semantic keys used in the code to OTEL span attribute names expected by your backend. Only keys present in the mapping are set on spans — unmapped keys are silently ignored.
+
+Available semantic keys:
+
+| Semantic key | Set by | Description |
+|-------------|--------|-------------|
+| `trace_name` | bot.py | Agent name |
+| `user_id` | bot.py | Slack user's display name |
+| `session_id` | bot.py | `{channel_name}.{thread_id}` |
+| `version` | bot.py | Agent version from config |
+| `input` | bot.py | User message text |
+| `output` | bot.py | Assistant response text |
+| `observation_type` | @observe decorator | Span type (e.g. `"generation"`) |
+| `model` | LLM providers | Model ID (e.g. `claude-sonnet-4-6`) |
+| `input_tokens` | LLM providers | Total input token count (including cached) |
+| `output_tokens` | LLM providers | Output token count |
+| `usage` | LLM providers | Token breakdown as JSON: `{input, output, cache_read_input, cache_creation_input}` |
+
+### Multiple endpoints
+
+Each endpoint has its own attribute mapping. When sending to multiple backends, each backend's attributes are all set on the same span — backends ignore attributes they don't recognize.
+
+```yaml
+observability:
+  endpoints:
+    - type: otlp
+      endpoint: "https://langfuse.example.com/api/public/otel/v1/traces"
+      basic_auth:
+        user: "{LANGFUSE_PUBLIC_KEY}"
+        password: "{LANGFUSE_SECRET_KEY}"
+      attributes:
+        trace_name: "langfuse.trace.name"
+        user_id: "langfuse.user.id"
+        model: "langfuse.observation.model.name"
+    - type: otlp
+      endpoint: "https://jaeger.internal:4318/v1/traces"
+      attributes:
+        user_id: "enduser.id"
+        model: "gen_ai.response.model"
+```
+
+## Langfuse
+
+[Langfuse](https://langfuse.com) supports native OTLP ingestion. Use `basic_auth` with your Langfuse public/secret keys and point the endpoint at `/api/public/otel/v1/traces`.
+
+```yaml
+observability:
+  endpoints:
+    - type: otlp
+      endpoint: "{LANGFUSE_HOST}/api/public/otel/v1/traces"
+      basic_auth:
+        user: "{LANGFUSE_PUBLIC_KEY}"
+        password: "{LANGFUSE_SECRET_KEY}"
+      attributes:
+        trace_name: "langfuse.trace.name"
+        user_id: "langfuse.user.id"
+        session_id: "langfuse.session.id"
+        version: "langfuse.version"
+        observation_type: "langfuse.observation.type"
+        input: "langfuse.observation.input"
+        output: "langfuse.observation.output"
+        model: "langfuse.observation.model.name"
+        input_tokens: "gen_ai.usage.input_tokens"
+        output_tokens: "gen_ai.usage.output_tokens"
+        usage: "langfuse.observation.usage_details"
+```
+
+Add the credentials to `.env`:
+
+```bash
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_SECRET_KEY=sk-lf-...
+LANGFUSE_HOST=https://cloud.langfuse.com
+```
+
+The `langfuse.*` attribute names are documented in [Langfuse's OpenTelemetry integration docs](https://langfuse.com/docs/integrations/opentelemetry).
+
+## Architecture
+
+The implementation is a thin wrapper around the OpenTelemetry SDK:
+
+- **`observability.py`** creates a `TracerProvider` with one `OTLPSpanExporter` per endpoint
+- **`@observe(name=...)`** decorator creates OTEL spans around functions (supports sync, async, and async generators)
+- **`set_span_attrs()`** sets attributes on the current span using the configured mapping
+- **`flush_trace()`** calls `TracerProvider.force_flush()`
+
+The code has zero backend-specific knowledge — all attribute naming is driven by `config.yaml`.
+
+---
+
+# Deployment
+
+## Overview
+
+Each agent runs as a single long-running process connected to Slack via Socket Mode (WebSocket). One process = one agent = one Slack app.
+
+All configuration is in `config.yaml`. Secrets use `{ENV_VAR}` placeholders resolved from environment variables at startup.
+
+## Docker
+
+Build a Docker image for any agent with the CLI:
+
+```bash
+slack-agents build-docker agents/my-agent
+```
+
+This produces an image tagged `slack-agents-my-agent:<version>` (version comes from `config.yaml`). The image runs `slack-agents run agent` on startup.
+
+To use a custom image name:
+
+```bash
+slack-agents build-docker agents/my-agent --image-name my-bot
+```
+
+To push to a registry:
+
+```bash
+slack-agents build-docker agents/my-agent --push registry.example.com
+```
+
+### docker-compose
+
+A minimal setup for running an agent locally or on a single server:
+
+```yaml
+services:
+  my-agent:
+    image: slack-agents-my-agent:1.0.0
+    restart: unless-stopped
+    env_file: .env
+```
+
+With PostgreSQL for persistent conversations:
+
+```yaml
+services:
+  my-agent:
+    image: slack-agents-my-agent:1.0.0
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://agent:secret@db:5432/agents
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: agent
+      POSTGRES_PASSWORD: secret
+      POSTGRES_DB: agents
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: pg_isready -U agent
+      interval: 5s
+      retries: 5
+
+volumes:
+  pgdata:
+```
+
+## Kubernetes
+
+Socket Mode requires exactly one WebSocket connection per Slack app. Run each agent as a Deployment with **1 replica** (`replicas: 1`, or `minReplicas: 1` / `maxReplicas: 1` if using an autoscaler).
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: my-agent
+  template:
+    metadata:
+      labels:
+        app: my-agent
+    spec:
+      containers:
+        - name: agent
+          image: registry.example.com/slack-agents-my-agent:1.0.0
+          envFrom:
+            - secretRef:
+                name: my-agent-secrets
+          livenessProbe:
+            exec:
+              command: ["slack-agents", "healthcheck", "agent"]
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            requests:
+              memory: 256Mi
+              cpu: 100m
+            limits:
+              memory: 512Mi
+```
+
+### Secrets
+
+Store tokens and API keys in a Kubernetes Secret and reference it via `envFrom`. The agent resolves `{ENV_VAR}` patterns in `config.yaml` from environment variables.
+
+```bash
+kubectl create secret generic my-agent-secrets \
+  --from-literal=SLACK_BOT_TOKEN=xoxb-... \
+  --from-literal=SLACK_APP_TOKEN=xapp-... \
+  --from-literal=ANTHROPIC_API_KEY=sk-ant-...
+```
+
+### Health checks
+
+The `slack-agents healthcheck` command checks the agent's WebSocket heartbeat (written every 10s to storage). It requires persistent storage (file-based SQLite or PostgreSQL). Use it as a liveness probe — Kubernetes will restart the pod if the connection drops.
+
+## Multiple agents
+
+Each agent is independent — its own Slack app, its own Docker image, its own deployment. To run several agents, repeat the pattern for each one. They share nothing at runtime.
+
+---
+
+# Organizing Your Agents
+
+Agents are just directories with `config.yaml` and `system_prompt.txt`. Where you put them depends on your situation.
+
+## Option 1: In the framework repo
+
+If you're developing the framework itself, add agents directly to `agents/`. To keep private agents out of version control, use a gitignored directory instead:
+
+```bash
+slack-agents run agents-local/my-agent
+```
+
+## Option 2: Separate repository
+
+For production agents with company-specific prompts, tools, and configs, create a standalone repository:
+
+```bash
+mkdir my-agents && cd my-agents
+slack-agents init my-agents
+pip install -e .
+```
+
+This scaffolds:
+
+```
+my-agents/
+├── pyproject.toml
+├── src/
+│   └── my_agents/
+│       └── __init__.py
+├── agents/
+│   └── hello-world/
+│       ├── config.yaml
+│       └── system_prompt.txt
+└── .env.example
+```
+
+The `pyproject.toml` and `src/` directory are required so that:
+
+- **`slack-agents run`** can import custom providers under `src/` (via `pip install -e .`)
+- **`slack-agents build-docker`** works (the bundled Dockerfile runs `pip install .`)
+
+### Custom providers
+
+Add custom providers to `src/` and reference them in config:
+
+```yaml
+tools:
+  internal-api:
+    type: my_agents.tools.internal_api
+    allowed_functions: [".*"]
+    base_url: "{INTERNAL_API_URL}"
+```
+
+### Docker
+
+No custom Dockerfile needed — `python-slack-agents` bundles one:
+
+```bash
+slack-agents build-docker agents/my-agent
+slack-agents build-docker agents/my-agent --push registry.example.com
+```

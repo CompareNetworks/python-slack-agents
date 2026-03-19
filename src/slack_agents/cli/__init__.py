@@ -8,6 +8,7 @@ from slack_agents.cli import (
     export_conversations,
     export_usage,
     healthcheck,
+    init,
     run,
 )
 
@@ -29,6 +30,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    init.register(subparsers)
     run.register(subparsers)
     healthcheck.register(subparsers)
     export_conversations.register(subparsers, _parse_tz_aware)

@@ -90,6 +90,26 @@ Each agent lives in `agents/<name>/` with `config.yaml` and `system_prompt.txt`.
 - **Tool definitions in Anthropic format** -- `{"name", "description", "input_schema"}` is the canonical format everywhere
 - **1 replica per agent** -- Socket Mode requires exactly one WebSocket connection per app
 
+## AI Documentation Files
+
+The project includes AI-agent-friendly documentation following the llms.txt convention:
+
+- `llms.txt` (repo root) -- concise index pointing to docs and llms-full.txt
+- `llms-full.txt` (repo root) -- generated from docs via `python3 src/slack_agents/scripts/generate_llms_full.py`
+- `llms-full.txt` is bundled in the PyPI wheel via `force-include` in pyproject.toml
+
+**When modifying docs:** re-run `python3 src/slack_agents/scripts/generate_llms_full.py` and commit the result.
+
+## Releasing
+
+1. Update `version` in `pyproject.toml`
+2. Update the minimum version in `src/slack_agents/cli/init.py` (`python-slack-agents>=X.Y,<2`)
+3. Commit and push to `main`
+3. Create a GitHub Release (which creates a git tag)
+4. The `publish.yml` workflow automatically builds and publishes to PyPI via trusted publishing
+
+Do NOT publish to PyPI manually — the GitHub Release trigger handles it.
+
 ## Style
 
 - Python 3.12+, line length 100

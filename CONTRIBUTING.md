@@ -67,6 +67,19 @@ Keep PRs focused — one concern per PR. Small PRs get reviewed faster.
 
 LLM providers, storage backends, and tools all follow the same pattern: a module with a `Provider` class. See the [docs/](docs/) directory for guides on creating each type.
 
+## AI Documentation
+
+This project ships `llms.txt` and `llms-full.txt` for AI agent discoverability. `llms-full.txt` is bundled in the PyPI wheel and generated from the docs by concatenation:
+
+```bash
+python3 src/slack_agents/scripts/generate_llms_full.py
+```
+
+When making changes that affect docs:
+- Update the relevant file in `docs/` as you normally would
+- Re-run the script above to regenerate `llms-full.txt` and commit the result
+- `llms.txt` only needs updating if you add/remove/rename a doc file
+
 ## License
 
 By contributing, you agree that your contributions will be licensed under the Apache 2.0 License.

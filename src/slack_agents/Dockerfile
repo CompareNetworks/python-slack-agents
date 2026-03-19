@@ -6,11 +6,12 @@ RUN apt-get update && \
 
 WORKDIR /app
 
-# Install Python deps first for layer caching
-COPY pyproject.toml README.md ./
-RUN pip install --no-cache-dir $(python -c "import tomllib; f=open('pyproject.toml','rb'); deps=tomllib.load(f)['project']['dependencies']; print(' '.join(deps))")
-
+COPY pyproject.toml ./
 COPY src/ src/
+# Some pyproject.toml configs reference README.md (hatchling readme field) or
+# llms-full.txt (hatchling force-include). Create empty placeholders so
+# pip install doesn't fail — their content isn't needed in the runtime image.
+RUN touch README.md llms-full.txt
 RUN pip install --no-cache-dir .
 
 # Download DejaVu fonts for PDF export with Unicode support

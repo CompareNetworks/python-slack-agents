@@ -2,66 +2,47 @@
 
 Agents are just directories with `config.yaml` and `system_prompt.txt`. Where you put them depends on your situation.
 
-## Option 1: In the `agents/` directory
+## Option 1: In the framework repo
 
-If you're developing the framework itself, add agents directly to `agents/`. The example agents (`hello-world`, `kitchen-sink`, `docs-assistant`) live here.
-
-To keep private agents out of version control, put them in a gitignored directory instead — for example `agents-local/`. The CLI doesn't care where the directory is:
+If you're developing the framework itself, add agents directly to `agents/`. To keep private agents out of version control, use a gitignored directory instead:
 
 ```bash
-slack-agents run agents-local/my-private-agent
+slack-agents run agents-local/my-agent
 ```
 
-## Option 2: Separate private repository
+## Option 2: Separate repository
 
-For production agents with company-specific prompts, tools, and configs, create a standalone repository that depends on `python-slack-agents`:
+For production agents with company-specific prompts, tools, and configs, create a standalone repository:
+
+```bash
+mkdir my-agents && cd my-agents
+slack-agents init my-agents
+pip install -e .
+```
+
+This scaffolds:
 
 ```
 my-agents/
-├── agents/
-│   ├── support-bot/
-│   │   ├── config.yaml
-│   │   └── system_prompt.txt
-│   └── sales-bot/
-│       ├── config.yaml
-│       └── system_prompt.txt
+├── pyproject.toml
 ├── src/
 │   └── my_agents/
 │       └── __init__.py
-├── pyproject.toml
-└── .env
+├── agents/
+│   └── hello-world/
+│       ├── config.yaml
+│       └── system_prompt.txt
+└── .env.example
 ```
 
-The `pyproject.toml` and `src/` directory are required for `slack-agents build-docker` to work — the bundled Dockerfile runs `pip install .` in the build context.
+The `pyproject.toml` and `src/` directory are required so that:
 
-### pyproject.toml
+- **`slack-agents run`** can import custom providers under `src/` (via `pip install -e .`)
+- **`slack-agents build-docker`** works (the bundled Dockerfile runs `pip install .`)
 
-```toml
-[project]
-name = "my-agents"
-version = "0.1.0"
-requires-python = ">=3.12"
-dependencies = [
-    "python-slack-agents>=0.5,<2",
-]
+### Custom providers
 
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-```
-
-### Building Docker images
-
-No custom Dockerfile needed — `python-slack-agents` bundles one:
-
-```bash
-slack-agents build-docker agents/support-bot
-slack-agents build-docker agents/support-bot --push registry.example.com
-```
-
-### Custom tools
-
-If your agents need custom tool providers, add them to your package and reference them in config:
+Add custom providers to `src/` and reference them in config:
 
 ```yaml
 tools:
@@ -69,4 +50,13 @@ tools:
     type: my_agents.tools.internal_api
     allowed_functions: [".*"]
     base_url: "{INTERNAL_API_URL}"
+```
+
+### Docker
+
+No custom Dockerfile needed — `python-slack-agents` bundles one:
+
+```bash
+slack-agents build-docker agents/my-agent
+slack-agents build-docker agents/my-agent --push registry.example.com
 ```

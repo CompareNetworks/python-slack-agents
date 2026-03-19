@@ -1,0 +1,60 @@
+# python-slack-agents
+
+> A Python framework for deploying AI agents as Slack bots. Config-driven: each agent is a YAML config and a system prompt.
+> Install: `pip install python-slack-agents`
+> Run: `slack-agents run agents/<name>`
+> Package: [PyPI](https://pypi.org/project/python-slack-agents/)
+> Source: [GitHub](https://github.com/CompareNetworks/python-slack-agents)
+
+## Overview
+
+- Each agent is a directory with `config.yaml` + `system_prompt.txt`
+- Config-driven: LLM provider, storage, tools, and access control are all set in YAML
+- Plugin architecture: every component uses a `type` field pointing to a Python module with a `Provider` class
+- Built-in support: Anthropic, OpenAI (+ compatible APIs), SQLite, PostgreSQL, MCP tools, file import/export, Slack canvases
+- Streaming responses, parallel tool execution, OpenTelemetry tracing
+- Socket Mode (WebSocket) -- no public URL required, works behind firewalls
+
+## Docs
+
+- [Complete AI reference (llms-full.txt)](https://raw.githubusercontent.com/CompareNetworks/python-slack-agents/main/llms-full.txt): Single-file reference with config schema, all providers, CLI, and examples
+- [Setup](https://raw.githubusercontent.com/CompareNetworks/python-slack-agents/main/docs/setup.md): Installation and Slack app creation
+- [Agents](https://raw.githubusercontent.com/CompareNetworks/python-slack-agents/main/docs/agents.md): Creating and configuring agents
+- [Tools](https://raw.githubusercontent.com/CompareNetworks/python-slack-agents/main/docs/tools.md): MCP servers, file import/export, custom tool providers
+- [LLM](https://raw.githubusercontent.com/CompareNetworks/python-slack-agents/main/docs/llm.md): Supported LLM providers and adding your own
+- [Storage](https://raw.githubusercontent.com/CompareNetworks/python-slack-agents/main/docs/storage.md): SQLite, PostgreSQL, and custom backends
+- [Access control](https://raw.githubusercontent.com/CompareNetworks/python-slack-agents/main/docs/access-control.md): Controlling who can use an agent
+- [Canvas](https://raw.githubusercontent.com/CompareNetworks/python-slack-agents/main/docs/canvas.md): Creating and managing Slack canvases
+- [User context](https://raw.githubusercontent.com/CompareNetworks/python-slack-agents/main/docs/user-context.md): Per-user memory across conversations
+- [Observability](https://raw.githubusercontent.com/CompareNetworks/python-slack-agents/main/docs/observability.md): OpenTelemetry tracing
+- [Deployment](https://raw.githubusercontent.com/CompareNetworks/python-slack-agents/main/docs/deployment.md): Docker, docker-compose, and Kubernetes
+- [CLI](https://raw.githubusercontent.com/CompareNetworks/python-slack-agents/main/docs/cli.md): Command reference
+- [Organizing agents](https://raw.githubusercontent.com/CompareNetworks/python-slack-agents/main/docs/private-repo.md): In-repo, separate directory, or private repository
+
+## Quick Reference
+
+Agent directory structure:
+```
+agents/my-agent/
+├── config.yaml
+└── system_prompt.txt
+```
+
+Plugin pattern (same for all provider types):
+```yaml
+# In config.yaml
+llm:
+  type: my_package.my_module    # dotted Python import path
+  param1: value1                # passed as kwargs to Provider.__init__
+```
+```python
+# In my_package/my_module.py
+class Provider(BaseClass):
+    def __init__(self, param1, **kwargs): ...
+```
+
+Built-in provider packages:
+- LLM: `slack_agents.llm.anthropic`, `slack_agents.llm.openai`
+- Storage: `slack_agents.storage.sqlite`, `slack_agents.storage.postgres`
+- Access: `slack_agents.access.allow_all`, `slack_agents.access.allow_list`
+- Tools: `slack_agents.tools.mcp_http`, `slack_agents.tools.file_importer`, `slack_agents.tools.file_exporter`, `slack_agents.tools.canvas`, `slack_agents.tools.user_context`

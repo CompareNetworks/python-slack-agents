@@ -38,13 +38,16 @@ Each agent is a directory with two files: a `config.yaml` and a `system_prompt.t
 ```bash
 pip install python-slack-agents
 
-# Set up your environment
-cp .env.example .env
+# Scaffold a new project
+mkdir my-agents && cd my-agents
+slack-agents init my-agents
 
-# Edit .env with your Slack and LLM tokens
-SLACK_BOT_TOKEN=xoxb-...
-SLACK_APP_TOKEN=xapp-...
-ANTHROPIC_API_KEY=sk-ant-...
+# Add your tokens
+cp .env.example .env
+# Edit .env: SLACK_BOT_TOKEN, SLACK_APP_TOKEN, ANTHROPIC_API_KEY
+
+# Install for development (makes custom providers importable)
+pip install -e .
 
 # Run the hello-world agent
 slack-agents run agents/hello-world
@@ -124,6 +127,7 @@ All secrets in `{ENV_VAR}` are resolved from environment variables at startup.
 ## CLI
 
 ```bash
+slack-agents init <project-name>                    # scaffold a new project
 slack-agents run agents/<name>                      # start an agent
 slack-agents healthcheck agents/<name>              # liveness probe (for k8s)
 slack-agents export-conversations agents/<name> \   # export conversation history
@@ -192,26 +196,47 @@ tools:
       - "get_document"    # exact match works too
 ```
 
+## Project Structure
+
+When you add custom providers (tools, LLM, storage, or access control), your project needs a `pyproject.toml` and a `src/` directory so that `pip install -e .` makes your code importable and `slack-agents build-docker` works:
+
+```
+my-agents/
+├── pyproject.toml          # declares python-slack-agents as dependency
+├── src/
+│   └── my_agents/          # your custom providers go here
+│       └── __init__.py
+├── agents/
+│   └── my-agent/
+│       ├── config.yaml
+│       └── system_prompt.txt
+└── .env
+```
+
+`slack-agents init` scaffolds this for you. See [Organizing agents](https://github.com/CompareNetworks/python-slack-agents/blob/main/docs/private-repo.md) for details.
+
 ## Extending
 
-Every pluggable component follows the same pattern. Add a new LLM provider, storage backend, tool, or access policy by creating a module with a `Provider` class:
+Every pluggable component follows the same pattern. Add a new LLM provider, storage backend, tool, or access policy by creating a module with a `Provider` class in `src/`:
 
 ```yaml
 # In config.yaml
 llm:
-  type: my_package.my_llm_provider
+  type: my_agents.my_llm_provider
   model: my-model
   api_key: "{MY_API_KEY}"
 ```
 
 ```python
-# In my_package/my_llm_provider.py
+# In src/my_agents/my_llm_provider.py
 from slack_agents.llm.base import BaseLLMProvider
 
 class Provider(BaseLLMProvider):
     def __init__(self, model, api_key, **kwargs):
         ...
 ```
+
+After `pip install -e .`, your providers are importable and the `type` field in config resolves them. This also works with `slack-agents build-docker` — the bundled Dockerfile runs `pip install .` automatically.
 
 See the docs for the full interface for each component:
 
@@ -252,6 +277,10 @@ To create a Slack app, use the manifest in [`docs/slack-app-manifest.json`](http
 - [Deployment](https://github.com/CompareNetworks/python-slack-agents/blob/main/docs/deployment.md) — Docker, docker-compose, and Kubernetes
 - [CLI](https://github.com/CompareNetworks/python-slack-agents/blob/main/docs/cli.md) — command reference
 - [Organizing agents](https://github.com/CompareNetworks/python-slack-agents/blob/main/docs/private-repo.md) — in-repo, separate directory, or private repository
+
+## For AI Agents
+
+If you're an AI agent or coding assistant, see [`llms-full.txt`](https://raw.githubusercontent.com/CompareNetworks/python-slack-agents/main/llms-full.txt) for a complete, single-file reference to the config schema, all providers, and the plugin system. After `pip install`, the reference is available locally inside the package at `slack_agents/llms-full.txt`.
 
 ## Related Projects
 
