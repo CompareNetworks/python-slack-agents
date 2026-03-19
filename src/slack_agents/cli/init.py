@@ -10,18 +10,37 @@ name = "{project_name}"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
-    "python-slack-agents>=0.6,<2",
+    "python-slack-agents<2",
+    # add packages required by your plugins here
 ]
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["src"]  # required to import plugins and to build docker images
 """
 
 ENV_EXAMPLE = """\
+# Full setup guide:
+# https://github.com/CompareNetworks/python-slack-agents/blob/main/docs/setup.md
+
 SLACK_BOT_TOKEN=xoxb-...
 SLACK_APP_TOKEN=xapp-...
+
+# LLM provider
 ANTHROPIC_API_KEY=sk-ant-...
 # OPENAI_API_KEY=sk-...
+"""
+
+GITIGNORE = """\
+.env
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+*.db
+.DS_Store
+.idea/
+.vscode/
+dist/
 """
 
 HELLO_WORLD_CONFIG = """\
@@ -74,6 +93,7 @@ def execute(args):
         ),
         f"src/{package_name}/__init__.py": "",
         ".env.example": ENV_EXAMPLE,
+        ".gitignore": GITIGNORE,
         "agents/hello-world/config.yaml": HELLO_WORLD_CONFIG,
         "agents/hello-world/system_prompt.txt": HELLO_WORLD_PROMPT,
     }
@@ -82,13 +102,27 @@ def execute(args):
         path = Path(rel_path)
         if path.exists():
             print(f"Skipping {rel_path} (already exists — remove it to regenerate)")
+            print("  Proposed content:\n")
+            for line in content.splitlines():
+                print(f"    {line}")
+            print()
             continue
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content)
         print(f"Created {rel_path}")
 
-    print()
+    # Warn about requirements files that won't be picked up by Docker builds
+    req_files = sorted(Path(".").glob("req*.txt"))
+    if req_files:
+        names = ", ".join(f.name for f in req_files)
+        print(f"WARNING: found {names}")
+        print("  Docker builds install dependencies from pyproject.toml, not")
+        print("  requirements files. Move your dependencies into pyproject.toml")
+        print("  under [project] dependencies or your Docker images will be")
+        print("  missing packages.")
+        print()
+
     print("Next steps:")
-    print("  cp .env.example .env       # add your tokens")
-    print("  pip install -e .           # install for development")
-    print("  slack-agents run agents/hello-world")
+    print("  cp .env.example .env                # add your tokens")
+    print("  pip install -e .                     # install for development")
+    print("  slack-agents run agents/hello-world  # run the example agent")

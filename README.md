@@ -36,17 +36,16 @@ Each agent is a directory with two files: a `config.yaml` and a `system_prompt.t
 ## Quick Start
 
 ```bash
+mkdir my-agents && cd my-agents
+python3 -m venv .venv
+source .venv/bin/activate
 pip install python-slack-agents
 
-# Scaffold a new project
-mkdir my-agents && cd my-agents
+# Scaffold the project
 slack-agents init my-agents
 
-# Add your tokens
-cp .env.example .env
-# Edit .env: SLACK_BOT_TOKEN, SLACK_APP_TOKEN, ANTHROPIC_API_KEY
-
-# Install for development (makes custom providers importable)
+# Add your tokens and install for development
+cp .env.example .env       # add your Slack and LLM tokens
 pip install -e .
 
 # Run the hello-world agent

@@ -33,6 +33,7 @@ def _is_valid_docker_name(name: str) -> bool:
 
 
 def execute(args):
+    import re
     import subprocess
     import sys
     from pathlib import Path
@@ -66,6 +67,18 @@ def execute(args):
     else:
         image_tag = f"{image_name}:{version}"
 
+    req_files = sorted(Path(".").glob("req*.txt"))
+    if req_files:
+        names = ", ".join(f.name for f in req_files)
+        print(
+            f"Error: found {names} in the project root.\n"
+            "Docker builds install dependencies from pyproject.toml, not\n"
+            "requirements files. Move your dependencies into pyproject.toml\n"
+            "under [project] dependencies, then remove the requirements file(s).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     print(f"Building {image_tag} ...")
     result = subprocess.run(
         [
@@ -92,3 +105,12 @@ def execute(args):
             sys.exit(result.returncode)
 
     print(f"Done: {image_tag}")
+
+    # Show required env vars last so they're visible without scrolling
+    raw_config = (agent_dir / "config.yaml").read_text()
+    active_config = re.sub(r"(?m)^(\s*)#.*$", r"\1", raw_config)
+    env_vars = sorted(set(re.findall(r"\{([A-Z_][A-Z0-9_]*)\}", active_config)))
+    if env_vars:
+        print(f"\nRequired environment variables ({len(env_vars)}):")
+        for var in env_vars:
+            print(f"  {var}")

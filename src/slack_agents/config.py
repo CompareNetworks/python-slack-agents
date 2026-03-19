@@ -14,8 +14,14 @@ logger = logging.getLogger(__name__)
 CURRENT_SCHEMA = "slack-agents/v1"
 
 
+def _strip_yaml_comments(text: str) -> str:
+    """Blank out YAML comment lines, preserving line numbers for error messages."""
+    return re.sub(r"(?m)^(\s*)#.*$", r"\1", text)
+
+
 def _resolve_env_vars(text: str) -> str:
     """Replace {VAR_NAME} with os.environ[VAR_NAME]. Only matches uppercase/underscore names."""
+    text = _strip_yaml_comments(text)
     return re.sub(r"\{([A-Z_][A-Z0-9_]*)\}", lambda m: os.environ[m.group(1)], text)
 
 

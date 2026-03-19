@@ -103,12 +103,13 @@ The project includes AI-agent-friendly documentation following the llms.txt conv
 ## Releasing
 
 1. Update `version` in `pyproject.toml`
-2. Update the minimum version in `src/slack_agents/cli/init.py` (`python-slack-agents>=X.Y,<2`)
-3. Commit and push to `main`
-3. Create a GitHub Release (which creates a git tag)
-4. The `publish.yml` workflow automatically builds and publishes to PyPI via trusted publishing
+2. Update `CHANGELOG.md` with the new version and changes
+3. Run `python3 src/slack_agents/scripts/generate_llms_full.py` to regenerate `llms-full.txt`
+4. Commit and push to `main`
+5. Create a GitHub Release (which creates a git tag)
+6. The `publish.yml` workflow automatically builds and publishes to PyPI via trusted publishing
 
-Do NOT publish to PyPI manually — the GitHub Release trigger handles it.
+The PyPI deployment requires manual approval in the GitHub Actions UI. Do NOT publish to PyPI manually — the GitHub Release trigger handles it.
 
 ## Style
 
@@ -116,3 +117,4 @@ Do NOT publish to PyPI manually — the GitHub Release trigger handles it.
 - Ruff rules: E, F, I (errors, pyflakes, isort)
 - Keep it simple. Minimal abstractions, no unnecessary indirection.
 - Commit messages: Conventional Commits — `feat:`, `fix:`, `docs:`, `chore:`, `test:`, `refactor:`. Lowercase, imperative, under 72 chars.
+- **Always propose the commit message and wait for explicit user approval before committing or pushing.** Never commit or push autonomously.

@@ -16,6 +16,9 @@ For production agents with company-specific prompts, tools, and configs, create 
 
 ```bash
 mkdir my-agents && cd my-agents
+python3 -m venv .venv
+source .venv/bin/activate
+pip install python-slack-agents
 slack-agents init my-agents
 pip install -e .
 ```

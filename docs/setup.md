@@ -6,9 +6,32 @@
 - A Slack workspace (all plans supported, including free)
 - API key for your LLM provider (Anthropic and/or OpenAI)
 
-## Installation
+## New Project
 
 ```bash
+mkdir my-agents && cd my-agents
+python3 -m venv .venv
+source .venv/bin/activate
+pip install python-slack-agents
+
+# Scaffold the project
+slack-agents init my-agents
+
+# Add your tokens and install for development
+cp .env.example .env       # add your Slack and LLM tokens (see below)
+pip install -e .
+
+# Run the hello-world agent
+slack-agents run agents/hello-world
+```
+
+## Framework Development
+
+If you're working on the framework itself:
+
+```bash
+git clone https://github.com/CompareNetworks/python-slack-agents.git
+cd python-slack-agents
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
@@ -40,7 +63,7 @@ ANTHROPIC_API_KEY=sk-ant-...
   - Copy: App Token (eg, SLACK_APP_TOKEN=xapp-...)
 - Settings > Install App
   - Copy: Bot User OAuth Token (eg, SLACK_BOT_TOKEN=xoxb-...)
-3. If App does not appeat in your Slack client:
+3. If App does not appear in your Slack client:
   - ... > Tools > Apps > (search by name and add the app)
 
 ## Download Fonts
@@ -52,12 +75,6 @@ python -m slack_agents.scripts.download_fonts
 ```
 
 This downloads `DejaVuSans.ttf` and `DejaVuSans-Bold.ttf` into `fonts/` (~700KB total). Without these fonts, PDF generation falls back to Helvetica (latin-1 only).
-
-## Running an Agent
-
-```bash
-slack-agents run agents/hello-world
-```
 
 ## Optional: PostgreSQL
 
