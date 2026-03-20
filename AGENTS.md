@@ -119,4 +119,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for full coding and commit conventions.
 - Ruff rules: E, F, I (errors, pyflakes, isort)
 - Keep it simple. Minimal abstractions, no unnecessary indirection.
 - Commit messages: Conventional Commits — `feat:`, `fix:`, `docs:`, `chore:`, `test:`, `refactor:`. Lowercase, imperative, under 72 chars.
-- **Always propose the commit message and wait for explicit user approval before committing or pushing.** Never commit or push autonomously.
+- **NEVER run `git commit` or `git push` without explicit user approval.** Always propose the commit message and file list, then STOP and wait for the user to say "go", "commit", "yes", or similar. This is non-negotiable — even if the user says "prepare a release" or "let's commit", you must present the plan and wait. "Prepare" ≠ "execute".

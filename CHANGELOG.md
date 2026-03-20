@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-03-19
+
+### Added
+
+- Canvas user-level authorization — tools enforce requesting user's access level via `files.info` metadata
+- Canvas file importer (`application/vnd.slack-docs`) — users can attach canvases to messages
+- `file_id` field on `InputFile` — file import pipeline now passes Slack file IDs to handlers
+- `org_access` parameter on `canvas_access_add` for workspace-wide access
+
+### Changed
+
+- Canvas tool descriptions instruct the LLM to guide users to attach canvases via Slack's + button (never ask for IDs)
+- Canvas tool errors now return structured JSON instead of plain text
+
+### Removed
+
+- `canvas_list` tool (scaling concern with batch `files.info`; users discover canvases via Slack UI)
+- `channel_id` parameter from `canvas_create` (standalone canvases only)
+- `channel_ids` parameter from `canvas_access_add` and `canvas_access_remove`
+
 ## [0.6.1] - 2026-03-19
 
 ### Added
