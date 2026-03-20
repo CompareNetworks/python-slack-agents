@@ -30,27 +30,9 @@ async def create_canvas(
     *,
     title: str | None = None,
     markdown: str | None = None,
-    channel_id: str | None = None,
 ) -> dict:
-    """Create a new canvas, optionally posting it to a channel.
-
-    If *channel_id* is provided the canvas is created inside that
-    conversation (required on free Slack plans).  Otherwise a
-    standalone canvas is created via ``canvases.create``.
-    """
-    if channel_id:
-        kwargs: dict = {}
-        if title:
-            kwargs["title"] = title
-        if markdown is not None:
-            kwargs["document_content"] = {"type": "markdown", "markdown": markdown}
-        resp = await client.api_call(
-            "conversations.canvases.create",
-            json={"channel_id": channel_id, **kwargs},
-        )
-        return _check(resp, "create")
-
-    kwargs = {}
+    """Create a new standalone canvas via ``canvases.create``."""
+    kwargs: dict = {}
     if title:
         kwargs["title"] = title
     if markdown is not None:
@@ -168,42 +150,20 @@ async def rename_canvas(
     return _check(resp, "rename")
 
 
-async def list_canvases(
-    client: AsyncWebClient,
-    *,
-    channel: str | None = None,
-    count: int = 20,
-) -> list[dict]:
-    """List canvases visible to the bot.
-
-    Uses ``files.list`` with ``types=canvas``.  Optionally filter by
-    *channel*.
-    """
-    kwargs: dict = {"types": "canvas", "count": count}
-    if channel:
-        kwargs["channel"] = channel
-    resp = await client.api_call("files.list", params=kwargs)
-    _check(resp, "list")
-    return resp.get("files", [])
-
-
 async def set_canvas_access(
     client: AsyncWebClient,
     *,
     canvas_id: str,
     access_level: str,
     user_ids: list[str] | None = None,
-    channel_ids: list[str] | None = None,
 ) -> dict:
-    """Grant access to a canvas for users and/or channels.
+    """Grant access to a canvas for users.
 
     *access_level* is one of ``read``, ``write``, or ``owner``.
     """
     payload: dict = {"canvas_id": canvas_id, "access_level": access_level}
     if user_ids:
         payload["user_ids"] = user_ids
-    if channel_ids:
-        payload["channel_ids"] = channel_ids
     resp = await client.api_call("canvases.access.set", json=payload)
     return _check(resp, "access.set")
 
@@ -213,13 +173,10 @@ async def delete_canvas_access(
     *,
     canvas_id: str,
     user_ids: list[str] | None = None,
-    channel_ids: list[str] | None = None,
 ) -> dict:
-    """Remove access to a canvas for users and/or channels."""
+    """Remove access to a canvas for users."""
     payload: dict = {"canvas_id": canvas_id}
     if user_ids:
         payload["user_ids"] = user_ids
-    if channel_ids:
-        payload["channel_ids"] = channel_ids
     resp = await client.api_call("canvases.access.delete", json=payload)
     return _check(resp, "access.delete")

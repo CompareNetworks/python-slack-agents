@@ -63,7 +63,12 @@ async def process_files_for_message(
         }
 
         block = await registry.process_file(
-            file_bytes, mimetype, filename, user_conversation_context, storage
+            file_bytes,
+            mimetype,
+            filename,
+            user_conversation_context,
+            storage,
+            file_id=file_info.get("id"),
         )
         if block is not None:
             if block.get("type") != "image":

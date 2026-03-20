@@ -95,10 +95,18 @@ tools:
       # - "export_csv"
       # - "export_pptx"
 
-  # Slack canvases (create, read, edit, list, delete)
+  # Slack canvases (create, read, update, delete + access management)
   # Requires Slack scopes: canvases:read, canvases:write, files:read
+  # Enforces user-level authorization — agent acts as delegate for the requesting user
   # canvas:
   #   type: slack_agents.tools.canvas
+  #   bot_token: "{SLACK_BOT_TOKEN}"
+  #   allowed_functions: [".*"]
+
+  # Canvas file importer — reads canvases attached to messages
+  # Requires Slack scopes: canvases:read, files:read
+  # canvas-importer:
+  #   type: slack_agents.tools.canvas_importer
   #   bot_token: "{SLACK_BOT_TOKEN}"
   #   allowed_functions: [".*"]
 

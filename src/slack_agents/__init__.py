@@ -1,7 +1,7 @@
 """slack-agents: A Python framework for deploying AI agents as Slack bots."""
 
 from importlib.metadata import version
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 __version__ = version("python-slack-agents")
 
@@ -23,3 +23,4 @@ class InputFile(TypedDict):
     file_bytes: bytes
     mimetype: str
     filename: str
+    file_id: NotRequired[str]

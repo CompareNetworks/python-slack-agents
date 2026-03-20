@@ -34,6 +34,7 @@ class FileHandlerRegistry:
         filename: str,
         user_conversation_context: UserConversationContext,
         storage: BaseStorageProvider,
+        file_id: str | None = None,
     ) -> ContentBlock | None:
         entry = self._mime_map.get(mimetype)
         if not entry:
@@ -50,6 +51,8 @@ class FileHandlerRegistry:
                 ),
             }
         input_file = InputFile(file_bytes=file_bytes, mimetype=mimetype, filename=filename)
+        if file_id is not None:
+            input_file["file_id"] = file_id
         try:
             return await provider.call_tool(
                 handler_name, input_file, user_conversation_context, storage
