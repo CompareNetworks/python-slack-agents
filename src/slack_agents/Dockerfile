@@ -13,10 +13,16 @@ RUN pip install --no-cache-dir .
 # Download DejaVu fonts for PDF export with Unicode support
 RUN python -m slack_agents.scripts.download_fonts
 
+# The agent directory is copied into /app/agent/<name>/ so the framework
+# derives agent_name from the directory name (via config.load_agent_config).
+# This ensures multiple agents sharing a database are distinguishable.
+# At runtime, the glob agent/* resolves to the single subdirectory.
+# "exec" replaces the shell so slack-agents receives signals directly.
 ARG AGENT_PATH
-COPY ${AGENT_PATH}/ /app/agent/
+ARG AGENT_NAME
+COPY ${AGENT_PATH}/ /app/agent/${AGENT_NAME}/
 
 RUN useradd -r -s /bin/false agent
 USER agent
 
-CMD ["slack-agents", "run", "agent"]
+CMD ["sh", "-c", "exec slack-agents run agent/*"]

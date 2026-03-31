@@ -88,6 +88,8 @@ def execute(args):
             args.platform,
             "--build-arg",
             f"AGENT_PATH={agent_dir}",
+            "--build-arg",
+            f"AGENT_NAME={agent_name}",
             "-f",
             str(dockerfile),
             "-t",
