@@ -6,6 +6,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-04-14
+
+### Changed
+
+- **Overlays are no longer Python packages.** `slack-agents init` scaffolds a plain git repo with `requirements.txt` (pinning the currently-installed framework version) instead of `pyproject.toml`. No more `pip install -e .` step for overlays — users run `pip install -r requirements.txt` and are done.
+- The framework CLI now walks up from the agent directory on startup, finds the nearest `src/` sibling, and prepends it to `sys.path`. Custom providers under `src/<pkg>/` resolve without installing the overlay as a pip package.
+- Bundled Dockerfile installs overlay dependencies from `requirements.txt` (or PEP 735 `[dependency-groups]` as an alternative) instead of running `pip install .`. The `README.md` / `llms-full.txt` placeholder workaround is gone.
+- Scaffolder `.gitignore` drops `*.egg-info/` and `dist/` (overlays no longer build wheels).
+
+### Added
+
+- `_auto_extend_sys_path()` helper in `slack_agents.config`, called from `load_agent_config()` before any plugin import.
+- End-to-end overlay integration test covering scaffold → auto-sys.path → custom provider resolution, plus Dockerfile-shape assertions.
+
+### Removed
+
+- `build-docker` no longer rejects overlays with `req*.txt` files — that file is now the expected input.
+- `slack-agents init` no longer emits `pyproject.toml` or warns about requirements files.
+- "Framework Development" section removed from `docs/setup.md` — contributors see `CONTRIBUTING.md` instead, keeping user-facing docs focused on overlay users.
+
+### Docs
+
+- Full rewrite of `docs/private-repo.md` around a single-path overlay model. PEP 735 `[dependency-groups]` documented as an alternative for teams who want `pyproject.toml` without `[project]`.
+- `README.md` "Project Structure" and "Extending" sections rewritten to match.
+
+### Migration
+
+- Delete your overlay's `pyproject.toml` and any `*.egg-info/` directories.
+- Add a `requirements.txt` pinning `python-slack-agents==0.7.0` (or `<2`).
+- Run `pip install -r requirements.txt`.
+- Custom providers under `src/<pkg>/` work without `pip install -e .`.
+
+## [0.6.3] - 2026-03-31
+
+### Fixed
+
+- Preserve agent name in Docker image for multi-agent database support (`COPY` uses `${AGENT_NAME}` so each image's agent directory keeps its identity).
+- Remove `libmupdf-dev` from the Docker image — image size down to 354 MB.
+
 ## [0.6.2] - 2026-03-19
 
 ### Added

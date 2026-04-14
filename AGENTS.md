@@ -102,12 +102,14 @@ The project includes AI-agent-friendly documentation following the llms.txt conv
 
 ## Releasing
 
-1. Update `version` in `pyproject.toml`
-2. Update `CHANGELOG.md` with the new version and changes
-3. Run `python3 src/slack_agents/scripts/generate_llms_full.py` to regenerate `llms-full.txt`
-4. Commit and push to `main`
-5. Create a GitHub Release (which creates a git tag)
-6. The `publish.yml` workflow automatically builds and publishes to PyPI via trusted publishing
+`CHANGELOG.md` is the gate. Entries accumulate under `## [Unreleased]` as PRs land; releasing just renames that heading to the new version. If prior releases skipped this step (as 0.6.3 did), backfill those versions first so the changelog is honest about history.
+
+1. **CHANGELOG.md** — rename `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD` with today's date, and add a fresh empty `## [Unreleased]` above it.
+2. **pyproject.toml** — bump `version` to `X.Y.Z`.
+3. **llms-full.txt** — regenerate: `python3 src/slack_agents/scripts/generate_llms_full.py`.
+4. Commit and push to `main`.
+5. Create a GitHub Release (which creates a git tag).
+6. The `publish.yml` workflow automatically builds and publishes to PyPI via trusted publishing.
 
 The PyPI deployment requires manual approval in the GitHub Actions UI. Do NOT publish to PyPI manually — the GitHub Release trigger handles it.
 

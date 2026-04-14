@@ -1,11 +1,14 @@
 """Tests for configuration loading."""
 
+import sys
+
 import pytest
 import yaml
 
 from slack_agents.config import (
     CURRENT_SCHEMA,
     AgentConfig,
+    _auto_extend_sys_path,
     load_agent_config,
 )
 
@@ -276,3 +279,65 @@ class TestLoadAgentConfig:
 
         config, system_prompt, agent_name = load_agent_config(agent_dir)
         assert config.version == "3.2.1"
+
+
+class TestAutoExtendSysPath:
+    def test_adds_src_when_present_as_sibling(self, tmp_path, monkeypatch):
+        # Layout: tmp/agents/foo/ with tmp/src/
+        agents_dir = tmp_path / "agents" / "foo"
+        agents_dir.mkdir(parents=True)
+        src_dir = tmp_path / "src"
+        src_dir.mkdir()
+
+        monkeypatch.setattr(sys, "path", list(sys.path))  # isolate
+        _auto_extend_sys_path(agents_dir)
+
+        assert str(src_dir) == sys.path[0]
+
+    def test_noop_when_no_src_anywhere(self, tmp_path, monkeypatch):
+        agents_dir = tmp_path / "agents" / "foo"
+        agents_dir.mkdir(parents=True)
+
+        original = list(sys.path)
+        monkeypatch.setattr(sys, "path", list(sys.path))
+        _auto_extend_sys_path(agents_dir)
+
+        assert sys.path == original
+
+    def test_walks_up_multiple_levels(self, tmp_path, monkeypatch):
+        # src/ is at tmp_path, config is deeper
+        agents_dir = tmp_path / "a" / "b" / "c"
+        agents_dir.mkdir(parents=True)
+        src_dir = tmp_path / "src"
+        src_dir.mkdir()
+
+        monkeypatch.setattr(sys, "path", list(sys.path))
+        _auto_extend_sys_path(agents_dir)
+
+        assert str(src_dir) == sys.path[0]
+
+    def test_ignores_file_named_src(self, tmp_path, monkeypatch):
+        agents_dir = tmp_path / "agents" / "foo"
+        agents_dir.mkdir(parents=True)
+        # Create a FILE called "src" (not a directory)
+        (tmp_path / "src").write_text("")
+
+        original = list(sys.path)
+        monkeypatch.setattr(sys, "path", list(sys.path))
+        _auto_extend_sys_path(agents_dir)
+
+        assert sys.path == original
+
+    def test_idempotent_on_repeat_call(self, tmp_path, monkeypatch):
+        agents_dir = tmp_path / "agents" / "foo"
+        agents_dir.mkdir(parents=True)
+        src_dir = tmp_path / "src"
+        src_dir.mkdir()
+
+        monkeypatch.setattr(sys, "path", list(sys.path))
+        _auto_extend_sys_path(agents_dir)
+        _auto_extend_sys_path(agents_dir)
+
+        # Only one entry for src_dir at position 0
+        assert sys.path[0] == str(src_dir)
+        assert sys.path.count(str(src_dir)) == 1

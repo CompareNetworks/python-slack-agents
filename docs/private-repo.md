@@ -20,32 +20,35 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install python-slack-agents
 slack-agents init my-agents
-pip install -e .
+pip install -r requirements.txt
 ```
 
 This scaffolds:
 
 ```
 my-agents/
-├── pyproject.toml
-├── src/
-│   └── my_agents/
-│       └── __init__.py
+├── requirements.txt              # pins python-slack-agents
+├── .env.example
+├── .gitignore
 ├── agents/
 │   └── hello-world/
 │       ├── config.yaml
 │       └── system_prompt.txt
-└── .env.example
+└── src/
+    └── my_agents/
+        └── __init__.py           # add custom providers here
 ```
 
-The `pyproject.toml` and `src/` directory are required so that:
+Your overlay is a **plain git repo** — not a Python package. You edit configs, commit, and run. There is no `pip install .` / `pip install -e .` step.
 
-- **`slack-agents run`** can import custom providers under `src/` (via `pip install -e .`)
-- **`slack-agents build-docker`** works (the bundled Dockerfile runs `pip install .`)
+### Two conventions to know
+
+- **`src/` holds custom Python.** On `slack-agents run`, the framework walks up from the agent directory looking for a `src/` sibling and prepends it to `sys.path`. Anything you put under `src/my_agents/...` becomes importable as `my_agents.…` — no install step.
+- **`requirements.txt` pins your framework and any extra Python deps.** `pip install -r requirements.txt` is the only install command you ever run.
 
 ### Custom providers
 
-Add custom providers to `src/` and reference them in config:
+Drop a module under `src/` and reference it in config:
 
 ```yaml
 tools:
@@ -55,9 +58,22 @@ tools:
     base_url: "{INTERNAL_API_URL}"
 ```
 
+Create `src/my_agents/tools/internal_api.py` with a `Provider` class; the framework will find it on the next `slack-agents run`. No reinstall needed.
+
+### Prefer pyproject.toml?
+
+You can use a `pyproject.toml` instead of `requirements.txt` — but **do not add a `[project]` table**, or your overlay becomes an installable package again (the thing this design deliberately avoids). Use PEP 735 `[dependency-groups]`:
+
+```toml
+[dependency-groups]
+default = ["python-slack-agents==X.Y.Z"]
+```
+
+Install with `pip install --group default` (pip ≥ 24.1) or `uv sync`.
+
 ### Docker
 
-No custom Dockerfile needed — `python-slack-agents` bundles one:
+No custom Dockerfile needed — `python-slack-agents` bundles one that auto-detects your dependency file:
 
 ```bash
 slack-agents build-docker agents/my-agent

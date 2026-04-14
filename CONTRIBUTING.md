@@ -46,6 +46,12 @@ refactor: simplify streaming formatter table detection
 
 Prefixes: `feat:`, `fix:`, `docs:`, `chore:`, `test:`, `refactor:`. First line under 72 characters. Add a body after a blank line if context is needed.
 
+## CHANGELOG
+
+When your change is user-visible (a new feature, a behavior change, a removed option, a fix with user-visible symptoms), add a bullet to `CHANGELOG.md` under `## [Unreleased]`. Group by Keep-a-Changelog categories (`### Added`, `### Changed`, `### Fixed`, `### Removed`). Internal refactors and test-only changes don't need an entry.
+
+Releasing is just renaming `[Unreleased]` — so if every PR touches it, releases stay cheap and honest.
+
 ## Pull Requests
 
 1. Fork the repo and create a branch

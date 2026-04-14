@@ -67,18 +67,6 @@ def execute(args):
     else:
         image_tag = f"{image_name}:{version}"
 
-    req_files = sorted(Path(".").glob("req*.txt"))
-    if req_files:
-        names = ", ".join(f.name for f in req_files)
-        print(
-            f"Error: found {names} in the project root.\n"
-            "Docker builds install dependencies from pyproject.toml, not\n"
-            "requirements files. Move your dependencies into pyproject.toml\n"
-            "under [project] dependencies, then remove the requirements file(s).",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
     print(f"Building {image_tag} ...")
     result = subprocess.run(
         [

@@ -261,3 +261,42 @@ class TestDockerImageNameValidation:
         from slack_agents.cli.build_docker import _is_valid_docker_name
 
         assert not _is_valid_docker_name(name)
+
+
+class TestBuildDockerDoesNotRejectRequirementsFile:
+    """Regression: old behavior rejected req*.txt; new model embraces it."""
+
+    def test_execute_does_not_exit_on_requirements_txt(self, tmp_path, monkeypatch):
+        from slack_agents.cli import build_docker
+
+        # Create a minimal overlay with requirements.txt and an agent
+        (tmp_path / "requirements.txt").write_text("python-slack-agents<2\n")
+        agent_dir = tmp_path / "agents" / "foo"
+        agent_dir.mkdir(parents=True)
+        (agent_dir / "config.yaml").write_text(
+            'version: "1.0.0"\n'
+            'schema: "slack-agents/v1"\n'
+            'slack: {bot_token: "x", app_token: "y"}\n'
+            "access: {type: slack_agents.access.allow_all}\n"
+            'llm: {type: slack_agents.llm.anthropic, model: m, api_key: "x",'
+            " max_tokens: 1, max_input_tokens: 1}\n"
+            'storage: {type: slack_agents.storage.sqlite, path: ":memory:"}\n'
+            "tools: {}\n"
+        )
+        (agent_dir / "system_prompt.txt").write_text("hi\n")
+
+        monkeypatch.chdir(tmp_path)
+        # Stub out subprocess.run so we don't actually invoke docker
+        monkeypatch.setattr(
+            "subprocess.run",
+            lambda *a, **kw: type("R", (), {"returncode": 0})(),
+        )
+
+        class A:
+            agent_dir = str(tmp_path / "agents" / "foo")
+            push = None
+            image_name = None
+            platform = "linux/amd64"
+
+        # Must not SystemExit
+        build_docker.execute(A())

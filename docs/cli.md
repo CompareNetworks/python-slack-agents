@@ -10,7 +10,7 @@ Scaffold a new project in the current directory.
 slack-agents init <project_name>
 ```
 
-Creates `pyproject.toml`, `src/<package>/`, `.env.example`, and a `hello-world` agent. Existing files are skipped with a warning.
+Creates `requirements.txt`, `src/<package>/`, `.env.example`, `.gitignore`, and a `hello-world` agent. Existing files are skipped with a warning.
 
 ## run
 

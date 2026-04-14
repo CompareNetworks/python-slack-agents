@@ -1,22 +1,6 @@
 """CLI subcommand: init — scaffold a new project."""
 
-PYPROJECT_TEMPLATE = """\
-[build-system]
-requires = ["setuptools"]
-build-backend = "setuptools.build_meta"
-
-[project]
-name = "{project_name}"
-version = "0.1.0"
-requires-python = ">=3.12"
-dependencies = [
-    "python-slack-agents<2",
-    # add packages required by your plugins here
-]
-
-[tool.setuptools.packages.find]
-where = ["src"]  # required to import plugins and to build docker images
-"""
+REQUIREMENTS_TEMPLATE = "python-slack-agents{pin}\n"
 
 ENV_EXAMPLE = """\
 # Full setup guide:
@@ -35,12 +19,10 @@ GITIGNORE = """\
 .venv/
 __pycache__/
 *.pyc
-*.egg-info/
 *.db
 .DS_Store
 .idea/
 .vscode/
-dist/
 """
 
 HELLO_WORLD_CONFIG = """\
@@ -76,8 +58,20 @@ def register(subparsers):
         "init",
         help="Scaffold a new project in the current directory",
     )
-    p.add_argument("project_name", help="Project name (used in pyproject.toml)")
+    p.add_argument("project_name", help="Project name (used to derive the src/ package name)")
     p.set_defaults(handler=execute)
+
+
+def _framework_pin() -> str:
+    """Return a pip version specifier pinning the current framework version.
+
+    Falls back to '<2' if the installed version can't be determined."""
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+
+        return f"=={version('python-slack-agents')}"
+    except (PackageNotFoundError, ImportError):
+        return "<2"
 
 
 def execute(args):
@@ -88,9 +82,7 @@ def execute(args):
     package_name = re.sub(r"[^a-z0-9]+", "_", project_name.lower()).strip("_") or "my_agents"
 
     files = {
-        "pyproject.toml": PYPROJECT_TEMPLATE.format(
-            project_name=project_name, package_name=package_name
-        ),
+        "requirements.txt": REQUIREMENTS_TEMPLATE.format(pin=_framework_pin()),
         f"src/{package_name}/__init__.py": "",
         ".env.example": ENV_EXAMPLE,
         ".gitignore": GITIGNORE,
@@ -111,18 +103,7 @@ def execute(args):
         path.write_text(content)
         print(f"Created {rel_path}")
 
-    # Warn about requirements files that won't be picked up by Docker builds
-    req_files = sorted(Path(".").glob("req*.txt"))
-    if req_files:
-        names = ", ".join(f.name for f in req_files)
-        print(f"WARNING: found {names}")
-        print("  Docker builds install dependencies from pyproject.toml, not")
-        print("  requirements files. Move your dependencies into pyproject.toml")
-        print("  under [project] dependencies or your Docker images will be")
-        print("  missing packages.")
-        print()
-
     print("Next steps:")
-    print("  cp .env.example .env                # add your tokens")
-    print("  pip install -e .                     # install for development")
-    print("  slack-agents run agents/hello-world  # run the example agent")
+    print("  cp .env.example .env                      # add your tokens")
+    print("  pip install -r requirements.txt           # install the framework")
+    print("  slack-agents run agents/hello-world       # run the example agent")

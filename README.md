@@ -44,9 +44,9 @@ pip install python-slack-agents
 # Scaffold the project
 slack-agents init my-agents
 
-# Add your tokens and install for development
-cp .env.example .env       # add your Slack and LLM tokens
-pip install -e .
+# Add your tokens and install framework + deps
+cp .env.example .env                 # add your Slack and LLM tokens
+pip install -r requirements.txt
 
 # Run the hello-world agent
 slack-agents run agents/hello-world
@@ -197,20 +197,30 @@ tools:
 
 ## Project Structure
 
-When you add custom providers (tools, LLM, storage, or access control), your project needs a `pyproject.toml` and a `src/` directory so that `pip install -e .` makes your code importable and `slack-agents build-docker` works:
+Your overlay is a plain git repo — not a Python package. You edit configs, commit, and run; there's no
+install-the-overlay-as-a-package step. A typical layout looks like:
 
 ```
 my-agents/
-├── pyproject.toml          # declares python-slack-agents as dependency
-├── src/
-│   └── my_agents/          # your custom providers go here
-│       └── __init__.py
+├── requirements.txt        # pins python-slack-agents (and any extra deps)
+├── .env.example
+├── .gitignore
 ├── agents/
 │   └── my-agent/
 │       ├── config.yaml
 │       └── system_prompt.txt
-└── .env
+└── src/                    # optional — only if you add custom providers
+    └── my_agents/
+        └── __init__.py
 ```
+
+Two conventions to know:
+
+- **`src/` holds custom Python.** On `slack-agents run`, the framework walks up from the agent directory,
+  finds the nearest `src/` sibling, and prepends it to `sys.path`. Anything under `src/<pkg>/...` is
+  importable as `<pkg>.…` with no install step.
+- **`requirements.txt` pins your framework version and any extra Python deps.** `pip install -r requirements.txt`
+  is the only install command you ever run.
 
 `slack-agents init` scaffolds this for you. See [Organizing agents](https://github.com/CompareNetworks/python-slack-agents/blob/main/docs/private-repo.md) for details.
 
@@ -235,7 +245,10 @@ class Provider(BaseLLMProvider):
         ...
 ```
 
-After `pip install -e .`, your providers are importable and the `type` field in config resolves them. This also works with `slack-agents build-docker` — the bundled Dockerfile runs `pip install .` automatically.
+After you drop a module under `src/`, it's picked up automatically on the next `slack-agents run` —
+the framework prepends `./src` to `sys.path` at startup. The same mechanism works inside Docker:
+the bundled Dockerfile installs dependencies from `requirements.txt` and copies your `src/` into the
+image, so custom providers resolve in production too.
 
 See the docs for the full interface for each component:
 

@@ -17,25 +17,17 @@ pip install python-slack-agents
 # Scaffold the project
 slack-agents init my-agents
 
-# Add your tokens and install for development
-cp .env.example .env       # add your Slack and LLM tokens (see below)
-pip install -e .
+# Install framework (and any deps) from requirements.txt
+pip install -r requirements.txt
+
+# Add your tokens
+cp .env.example .env
 
 # Run the hello-world agent
 slack-agents run agents/hello-world
 ```
 
-## Framework Development
-
-If you're working on the framework itself:
-
-```bash
-git clone https://github.com/CompareNetworks/python-slack-agents.git
-cd python-slack-agents
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
-```
+*Working on the framework itself? See [CONTRIBUTING.md](../CONTRIBUTING.md).*
 
 ## Environment Variables
 

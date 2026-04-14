@@ -4,12 +4,34 @@ import importlib
 import logging
 import os
 import re
+import sys
 from pathlib import Path
 
 import yaml
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
+
+
+def _auto_extend_sys_path(agent_dir: Path) -> None:
+    """Prepend the nearest ancestor `src/` directory to sys.path.
+
+    Walks up from `agent_dir` through its parents; the first `src/` subdir
+    found is prepended to sys.path so custom providers under `src/` can be
+    imported without installing the overlay as a pip package. Idempotent —
+    a repeat call won't duplicate the entry.
+    """
+    agent_dir = Path(agent_dir).resolve()
+    for ancestor in [agent_dir, *agent_dir.parents]:
+        src = ancestor / "src"
+        if src.is_dir():
+            src_str = str(src)
+            if src_str in sys.path:
+                return
+            sys.path.insert(0, src_str)
+            logger.info("Added %s to sys.path", src_str)
+            return
+
 
 CURRENT_SCHEMA = "slack-agents/v1"
 
@@ -99,6 +121,7 @@ def load_agent_config(agent_dir: Path) -> tuple[AgentConfig, str, str]:
 
     Returns (config, system_prompt, agent_name).
     """
+    _auto_extend_sys_path(agent_dir)
     config_path = agent_dir / "config.yaml"
     prompt_path = agent_dir / "system_prompt.txt"
 
