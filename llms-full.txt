@@ -294,7 +294,13 @@ Tool providers give the LLM callable tools. Extend `BaseToolProvider`:
 
 ```python
 # my_tools/calculator.py
-from slack_agents.tools.base import BaseToolProvider, ToolResult
+from slack_agents.tools.base import (
+    ERROR_INPUT_ERROR,
+    RECOVERY_ABORT,
+    BaseToolProvider,
+    ToolResult,
+    make_tool_error,
+)
 
 class Provider(BaseToolProvider):
     def __init__(self, allowed_functions: list[str]):
@@ -320,7 +326,13 @@ class Provider(BaseToolProvider):
         if name == "add":
             result = arguments["a"] + arguments["b"]
             return {"content": str(result), "is_error": False, "files": []}
-        return {"content": f"Unknown tool: {name}", "is_error": True, "files": []}
+        return make_tool_error(
+            error=ERROR_INPUT_ERROR,
+            code="unknown_tool",
+            tool=name,
+            recovery=RECOVERY_ABORT,
+            message=f"Tool {name!r} is not provided by this calculator.",
+        )
 ```
 
 ### Key points
@@ -330,6 +342,7 @@ class Provider(BaseToolProvider):
 - `call_tool(name, arguments, user_context, storage)` returns a `ToolResult` (`{"content": str, "is_error": bool, "files": list[OutputFile]}`)
 - Files in the response are uploaded to Slack automatically
 - `initialize()` and `close()` are optional lifecycle hooks
+- For error returns, use `make_tool_error(...)` so the LLM gets a structured payload it can interpret consistently. See [Tool error schema](#tool-error-schema) below.
 
 ## File Importer Providers
 
@@ -404,6 +417,82 @@ tools:
 | `init_retries` | `list[int]` | `[5, 10, 30]` | Seconds to wait between connection retries at startup. The server is tried once immediately, then once after each delay. Set to `[]` to disable retries. |
 
 All MCP tool providers are initialized in parallel at startup. If any provider fails to connect after exhausting its retries, the agent exits with an error.
+
+## MCP over HTTP with OAuth
+
+`slack_agents.tools.mcp_http_oauth` is the OAuth-authenticated counterpart to
+`mcp_http` — for MCP servers that require per-user OAuth 2.1 authentication
+rather than a static API key. See [`docs/oauth.md`](oauth.md) for the full
+guide. Minimal example:
+
+```yaml
+tools:
+  my-mcp:
+    type: slack_agents.tools.mcp_http_oauth
+    url: "https://my-server.example.com/mcp"
+    allowed_functions: [".*"]
+```
+
+This pulls in extra runtime requirements: `OAUTH_PUBLIC_URL`,
+`OAUTH_SECRET_KEY`, and an in-process HTTP listener for OAuth callbacks. Read
+the OAuth doc before configuring this in production.
+
+## Tool error schema
+
+When a tool returns `is_error: True`, every built-in tool emits a JSON-encoded
+payload in `content` matching this shape, so the LLM consuming the result can
+reason about the failure uniformly. Custom tools should produce the same shape
+via the `make_tool_error` helper.
+
+```json
+{
+  "error":    "<type>",        // required: e.g. "permission_denied"
+  "code":     "<subtype>",     // optional: stable per-error sub-classification
+  "tool":     "<tool name>",   // optional: which tool was being called
+  "server":   "<server id>",   // optional: provider/server context
+  "message":  "<human>",       // required: human-readable summary
+  "recovery": "<action>",      // required: see below
+  "details":  { ... }          // optional: free-form per-error-type
+}
+```
+
+**Top-level error types** (`error`):
+
+| Constant | When to use |
+|---|---|
+| `ERROR_PERMISSION_DENIED` | Auth/scope/role refusal — user-level |
+| `ERROR_SYSTEM_ERROR` | Operational/library/transient failure |
+| `ERROR_AUTH_SETUP_FAILED` | Auth flow itself broke (timeout, prompt failure) |
+| `ERROR_INPUT_ERROR` | Bad call / unknown tool / bad arguments |
+
+**Recovery actions** (`recovery`):
+
+| Constant | Meaning |
+|---|---|
+| `RECOVERY_RETRY` | Transient or user-recoverable; just try again |
+| `RECOVERY_CONTACT_ADMIN` | Requires realm/IdP/account admin |
+| `RECOVERY_CONTACT_SUPPORT` | Framework operator/dev needs to investigate logs |
+| `RECOVERY_ABORT` | Nothing to do for this call (LLM may try a different tool) |
+
+**Helper signature:**
+
+```python
+from slack_agents.tools.base import make_tool_error  # plus ERROR_*, RECOVERY_*
+
+return make_tool_error(
+    error=ERROR_SYSTEM_ERROR,             # required
+    message="Server returned 502.",       # required
+    recovery=RECOVERY_RETRY,              # required
+    code="upstream_502",                  # optional
+    tool="search_docs",                   # optional
+    server="my-mcp",                      # optional
+    details={"status": 502},              # optional, schema-less
+)
+```
+
+`details` is intentionally schema-less — each error type can carry whatever
+structured fields the LLM benefits from seeing (missing scopes, exception
+types, timestamps for support correlation, etc.).
 
 ## Configuration
 
