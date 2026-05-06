@@ -4,7 +4,33 @@ from __future__ import annotations
 
 import json
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from datetime import datetime, timezone
+
+
+@dataclass
+class OAuthTokenRow:
+    """Persisted OAuth token state for one (user, server) pair."""
+
+    access_token: str
+    refresh_token_enc: str | None
+    token_type: str
+    scopes: str  # space-separated, as granted
+    expires_at: int | None  # unix epoch seconds
+    created_at: int
+    updated_at: int
+
+
+@dataclass
+class OAuthClientRow:
+    """Persisted dynamic-client-registration result for one MCP server."""
+
+    client_id: str
+    client_secret: str | None
+    metadata_json: str  # full OAuthClientInformationFull serialized
+    authorization_server: str
+    created_at: int
+    updated_at: int
 
 
 class BaseStorageProvider(ABC):
@@ -49,6 +75,31 @@ class BaseStorageProvider(ABC):
     @abstractmethod
     async def query(self, namespace: str, filters: dict) -> list[dict]:
         """Query items in a namespace by filters. Simple equality matching."""
+
+    # ------------------------------------------------------------------
+    # OAuth abstract methods — typed CRUD for per-user MCP token state
+    # and per-server dynamic-client-registration records.
+    # ------------------------------------------------------------------
+
+    @abstractmethod
+    async def get_oauth_token(self, user_id: str, server_id: str) -> OAuthTokenRow | None:
+        """Return the persisted token row for ``(user_id, server_id)`` or None."""
+
+    @abstractmethod
+    async def put_oauth_token(self, user_id: str, server_id: str, row: OAuthTokenRow) -> None:
+        """Upsert the token row for ``(user_id, server_id)``."""
+
+    @abstractmethod
+    async def delete_oauth_token(self, user_id: str, server_id: str) -> None:
+        """Delete the token row for ``(user_id, server_id)`` if present."""
+
+    @abstractmethod
+    async def get_oauth_client(self, server_id: str) -> OAuthClientRow | None:
+        """Return the persisted dynamic-client-registration row for ``server_id``."""
+
+    @abstractmethod
+    async def put_oauth_client(self, server_id: str, row: OAuthClientRow) -> None:
+        """Upsert the dynamic-client-registration row for ``server_id``."""
 
     async def close(self) -> None:
         """Close connections and clean up resources."""

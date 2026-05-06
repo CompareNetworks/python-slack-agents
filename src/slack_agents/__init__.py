@@ -1,5 +1,7 @@
 """slack-agents: A Python framework for deploying AI agents as Slack bots."""
 
+import asyncio
+from dataclasses import dataclass, field
 from importlib.metadata import version
 from typing import NotRequired, TypedDict
 
@@ -24,3 +26,53 @@ class InputFile(TypedDict):
     mimetype: str
     filename: str
     file_id: NotRequired[str]
+
+
+@dataclass
+class OAuthCallbackResult:
+    """Result delivered by the in-process callback server to a waiting OAuth flow."""
+
+    code: str | None = None
+    state: str | None = None
+    error: str | None = None
+    error_description: str | None = None
+
+
+class PendingFlowsRegistry:
+    """In-memory map: SDK state value -> Future to be resolved by the callback handler."""
+
+    def __init__(self) -> None:
+        self._flows: dict[str, asyncio.Future[OAuthCallbackResult]] = {}
+
+    def register(self, state: str) -> asyncio.Future[OAuthCallbackResult]:
+        loop = asyncio.get_event_loop()
+        fut: asyncio.Future[OAuthCallbackResult] = loop.create_future()
+        self._flows[state] = fut
+        return fut
+
+    def resolve(self, state: str, result: OAuthCallbackResult) -> bool:
+        fut = self._flows.pop(state, None)
+        if fut is None or fut.done():
+            return False
+        fut.set_result(result)
+        return True
+
+    def discard(self, state: str) -> None:
+        self._flows.pop(state, None)
+
+
+@dataclass
+class FrameworkContext:
+    """Shared services injected into providers that declare they need them.
+
+    Providers receive this only if their __init__ accepts a `framework_ctx` parameter
+    (see `slack_agents.config.load_plugin`).
+    """
+
+    bot_token: str
+    agent_name: str
+    # The next two are typed loosely to avoid importing slack_sdk / storage at module
+    # load time; the framework binds the real instances at runtime.
+    slack_client: object = None
+    storage: object = None
+    pending_flows: PendingFlowsRegistry = field(default_factory=PendingFlowsRegistry)

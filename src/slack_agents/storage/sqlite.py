@@ -9,7 +9,7 @@ from pathlib import Path
 
 import aiosqlite
 
-from slack_agents.storage.base import BaseStorageProvider
+from slack_agents.storage.base import BaseStorageProvider, OAuthClientRow, OAuthTokenRow
 
 logger = logging.getLogger(__name__)
 
@@ -471,3 +471,90 @@ class Provider(BaseStorageProvider):
                 }
             )
         return result
+
+    # ------------------------------------------------------------------
+    # OAuth CRUD — typed rows for per-user MCP token state and per-server
+    # dynamic-client-registration records.
+    # ------------------------------------------------------------------
+
+    async def get_oauth_token(self, user_id: str, server_id: str) -> OAuthTokenRow | None:
+        async with self._db.execute(
+            "SELECT access_token, refresh_token_enc, token_type, scopes, "
+            "expires_at, created_at, updated_at "
+            "FROM oauth_tokens WHERE user_id=? AND server_id=?",
+            (user_id, server_id),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return None
+        return OAuthTokenRow(*row)
+
+    async def put_oauth_token(self, user_id: str, server_id: str, row: OAuthTokenRow) -> None:
+        await self._db.execute(
+            "INSERT INTO oauth_tokens ("
+            "user_id, server_id, access_token, refresh_token_enc, "
+            "token_type, scopes, expires_at, created_at, updated_at"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(user_id, server_id) DO UPDATE SET "
+            "access_token=excluded.access_token, "
+            "refresh_token_enc=excluded.refresh_token_enc, "
+            "token_type=excluded.token_type, "
+            "scopes=excluded.scopes, "
+            "expires_at=excluded.expires_at, "
+            "updated_at=excluded.updated_at",
+            (
+                user_id,
+                server_id,
+                row.access_token,
+                row.refresh_token_enc,
+                row.token_type,
+                row.scopes,
+                row.expires_at,
+                row.created_at,
+                row.updated_at,
+            ),
+        )
+        await self._db.commit()
+
+    async def delete_oauth_token(self, user_id: str, server_id: str) -> None:
+        await self._db.execute(
+            "DELETE FROM oauth_tokens WHERE user_id=? AND server_id=?",
+            (user_id, server_id),
+        )
+        await self._db.commit()
+
+    async def get_oauth_client(self, server_id: str) -> OAuthClientRow | None:
+        async with self._db.execute(
+            "SELECT client_id, client_secret, metadata_json, "
+            "authorization_server, created_at, updated_at "
+            "FROM oauth_clients WHERE server_id=?",
+            (server_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return None
+        return OAuthClientRow(*row)
+
+    async def put_oauth_client(self, server_id: str, row: OAuthClientRow) -> None:
+        await self._db.execute(
+            "INSERT INTO oauth_clients ("
+            "server_id, client_id, client_secret, metadata_json, "
+            "authorization_server, created_at, updated_at"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(server_id) DO UPDATE SET "
+            "client_id=excluded.client_id, "
+            "client_secret=excluded.client_secret, "
+            "metadata_json=excluded.metadata_json, "
+            "authorization_server=excluded.authorization_server, "
+            "updated_at=excluded.updated_at",
+            (
+                server_id,
+                row.client_id,
+                row.client_secret,
+                row.metadata_json,
+                row.authorization_server,
+                row.created_at,
+                row.updated_at,
+            ),
+        )
+        await self._db.commit()

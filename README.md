@@ -17,7 +17,7 @@ Each agent is a directory with two files: a `config.yaml` and a `system_prompt.t
 
 **LLM providers** — Anthropic and OpenAI built in, plus any OpenAI-compatible API (Mistral, Groq, Together, Ollama, vLLM). Extend to any other provider by implementing a simple base class.
 
-**Tool calling with MCP** — Connect any [MCP server](https://modelcontextprotocol.io/) over HTTP. Tools are discovered automatically, executed in parallel, and filtered with regex patterns. No tool registration boilerplate.
+**Tool calling with MCP** — Connect any [MCP server](https://modelcontextprotocol.io/) over HTTP. Tools are discovered automatically, executed in parallel, and filtered with regex patterns. No tool registration boilerplate. **OAuth-protected MCP servers are supported with per-Slack-user tokens** — see [docs/oauth.md](docs/oauth.md).
 
 **File handling** — Agents can read files your users upload (PDF, DOCX, XLSX, PPTX, CSV, images) and generate documents back (PDF, DOCX, XLSX, CSV, PPTX). All built in, no extra setup.
 

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import asyncpg
 
-from slack_agents.storage.base import BaseStorageProvider
+from slack_agents.storage.base import BaseStorageProvider, OAuthClientRow, OAuthTokenRow
 
 logger = logging.getLogger(__name__)
 
@@ -610,3 +610,103 @@ class Provider(BaseStorageProvider):
                 }
             )
         return result
+
+    # ------------------------------------------------------------------
+    # OAuth CRUD — typed rows for per-user MCP token state and per-server
+    # dynamic-client-registration records.
+    # ------------------------------------------------------------------
+
+    async def get_oauth_token(self, user_id: str, server_id: str) -> OAuthTokenRow | None:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT access_token, refresh_token_enc, token_type, scopes, "
+                "expires_at, created_at, updated_at "
+                "FROM oauth_tokens WHERE user_id=$1 AND server_id=$2",
+                user_id,
+                server_id,
+            )
+        if row is None:
+            return None
+        return OAuthTokenRow(
+            access_token=row["access_token"],
+            refresh_token_enc=row["refresh_token_enc"],
+            token_type=row["token_type"],
+            scopes=row["scopes"],
+            expires_at=row["expires_at"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+    async def put_oauth_token(self, user_id: str, server_id: str, row: OAuthTokenRow) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO oauth_tokens ("
+                "user_id, server_id, access_token, refresh_token_enc, "
+                "token_type, scopes, expires_at, created_at, updated_at"
+                ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) "
+                "ON CONFLICT (user_id, server_id) DO UPDATE SET "
+                "access_token=EXCLUDED.access_token, "
+                "refresh_token_enc=EXCLUDED.refresh_token_enc, "
+                "token_type=EXCLUDED.token_type, "
+                "scopes=EXCLUDED.scopes, "
+                "expires_at=EXCLUDED.expires_at, "
+                "updated_at=EXCLUDED.updated_at",
+                user_id,
+                server_id,
+                row.access_token,
+                row.refresh_token_enc,
+                row.token_type,
+                row.scopes,
+                row.expires_at,
+                row.created_at,
+                row.updated_at,
+            )
+
+    async def delete_oauth_token(self, user_id: str, server_id: str) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "DELETE FROM oauth_tokens WHERE user_id=$1 AND server_id=$2",
+                user_id,
+                server_id,
+            )
+
+    async def get_oauth_client(self, server_id: str) -> OAuthClientRow | None:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT client_id, client_secret, metadata_json, "
+                "authorization_server, created_at, updated_at "
+                "FROM oauth_clients WHERE server_id=$1",
+                server_id,
+            )
+        if row is None:
+            return None
+        return OAuthClientRow(
+            client_id=row["client_id"],
+            client_secret=row["client_secret"],
+            metadata_json=row["metadata_json"],
+            authorization_server=row["authorization_server"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+    async def put_oauth_client(self, server_id: str, row: OAuthClientRow) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO oauth_clients ("
+                "server_id, client_id, client_secret, metadata_json, "
+                "authorization_server, created_at, updated_at"
+                ") VALUES ($1, $2, $3, $4, $5, $6, $7) "
+                "ON CONFLICT (server_id) DO UPDATE SET "
+                "client_id=EXCLUDED.client_id, "
+                "client_secret=EXCLUDED.client_secret, "
+                "metadata_json=EXCLUDED.metadata_json, "
+                "authorization_server=EXCLUDED.authorization_server, "
+                "updated_at=EXCLUDED.updated_at",
+                server_id,
+                row.client_id,
+                row.client_secret,
+                row.metadata_json,
+                row.authorization_server,
+                row.created_at,
+                row.updated_at,
+            )

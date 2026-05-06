@@ -71,3 +71,26 @@ CREATE TABLE IF NOT EXISTS agent_heartbeats (
 CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id);
 CREATE INDEX IF NOT EXISTS idx_blocks_msg ON blocks(message_id);
 CREATE INDEX IF NOT EXISTS idx_blocks_tool_call ON blocks(tool_call_id);
+
+CREATE TABLE IF NOT EXISTS oauth_tokens (
+    user_id              TEXT     NOT NULL,
+    server_id            TEXT     NOT NULL,
+    access_token         TEXT     NOT NULL,
+    refresh_token_enc    TEXT,
+    token_type           TEXT     NOT NULL DEFAULT 'Bearer',
+    scopes               TEXT     NOT NULL DEFAULT '',
+    expires_at           INTEGER,
+    created_at           INTEGER  NOT NULL,
+    updated_at           INTEGER  NOT NULL,
+    PRIMARY KEY (user_id, server_id)
+);
+
+CREATE TABLE IF NOT EXISTS oauth_clients (
+    server_id            TEXT     NOT NULL PRIMARY KEY,
+    client_id            TEXT     NOT NULL,
+    client_secret        TEXT,
+    metadata_json        TEXT     NOT NULL,
+    authorization_server TEXT     NOT NULL,
+    created_at           INTEGER  NOT NULL,
+    updated_at           INTEGER  NOT NULL
+);

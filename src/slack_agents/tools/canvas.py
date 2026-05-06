@@ -21,7 +21,17 @@ from slack_agents.slack.canvases import (
     set_canvas_access,
 )
 from slack_agents.storage.base import BaseStorageProvider
-from slack_agents.tools.base import BaseToolProvider, ToolResult
+from slack_agents.tools.base import (
+    ERROR_INPUT_ERROR,
+    ERROR_PERMISSION_DENIED,
+    ERROR_SYSTEM_ERROR,
+    RECOVERY_ABORT,
+    RECOVERY_CONTACT_ADMIN,
+    RECOVERY_CONTACT_SUPPORT,
+    BaseToolProvider,
+    ToolResult,
+    make_tool_error,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -393,30 +403,39 @@ class Provider(BaseToolProvider):
     ) -> ToolResult:
         handler = self._handlers.get(name)
         if not handler:
-            return {
-                "content": json.dumps({"error": f"Unknown tool: {name}"}),
-                "is_error": True,
-                "files": [],
-            }
+            return make_tool_error(
+                error=ERROR_INPUT_ERROR,
+                code="unknown_tool",
+                tool=name,
+                recovery=RECOVERY_ABORT,
+                message=f"Tool {name!r} is not provided by the canvas tool.",
+            )
         try:
             await self._check_user_authorization(name, arguments, user_conversation_context)
             return await handler(self._client, arguments, user_conversation_context)
         except CanvasAccessDenied as e:
-            return {
-                "content": json.dumps({"error": "access_denied", "message": str(e)}),
-                "is_error": True,
-                "files": [],
-            }
+            return make_tool_error(
+                error=ERROR_PERMISSION_DENIED,
+                code="canvas_access_denied",
+                tool=name,
+                recovery=RECOVERY_CONTACT_ADMIN,
+                message=str(e),
+            )
         except CanvasError as e:
-            return {
-                "content": json.dumps({"error": "canvas_error", "message": str(e)}),
-                "is_error": True,
-                "files": [],
-            }
+            return make_tool_error(
+                error=ERROR_SYSTEM_ERROR,
+                code="canvas_error",
+                tool=name,
+                recovery=RECOVERY_CONTACT_SUPPORT,
+                message=str(e),
+                details={"exception": f"{type(e).__name__}: {e}"},
+            )
         except Exception as e:
             logger.exception("Canvas tool call failed: %s", name)
-            return {
-                "content": json.dumps({"error": "tool_error", "message": str(e)}),
-                "is_error": True,
-                "files": [],
-            }
+            return make_tool_error(
+                error=ERROR_SYSTEM_ERROR,
+                tool=name,
+                recovery=RECOVERY_CONTACT_SUPPORT,
+                message=f"Canvas tool {name!r} failed: {e}",
+                details={"exception": f"{type(e).__name__}: {e}"},
+            )

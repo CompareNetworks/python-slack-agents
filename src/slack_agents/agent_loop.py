@@ -10,7 +10,13 @@ from slack_agents.llm import CHARS_PER_TOKEN
 from slack_agents.llm.base import BaseLLMProvider, LLMResponse, Message, StreamEvent
 from slack_agents.observability import observe
 from slack_agents.storage.base import BaseStorageProvider
-from slack_agents.tools.base import BaseToolProvider, ToolResult
+from slack_agents.tools.base import (
+    ERROR_INPUT_ERROR,
+    RECOVERY_ABORT,
+    BaseToolProvider,
+    ToolResult,
+    make_tool_error,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -154,7 +160,16 @@ async def run_agent_loop_streaming(
                 return await provider.call_tool(
                     tc.name, tc.input, user_conversation_context, storage
                 )
-            return {"content": f"Unknown tool: {tc.name}", "is_error": True, "files": []}
+            return make_tool_error(
+                error=ERROR_INPUT_ERROR,
+                code="unknown_tool",
+                tool=tc.name,
+                recovery=RECOVERY_ABORT,
+                message=(
+                    f"Tool {tc.name!r} is not registered with this agent. "
+                    "Pick a different tool from the available list."
+                ),
+            )
 
         results = await asyncio.gather(*[_call(tc) for tc in collected_tool_calls])
 

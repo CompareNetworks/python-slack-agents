@@ -4,7 +4,26 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.8.0] - 2026-05-06
+
+### Added
+
+- `slack_agents.tools.mcp_http_oauth` — OAuth-authenticated MCP tool provider with per-Slack-user tokens. Each user authenticates separately to the upstream service; refresh tokens are AES-GCM-encrypted at rest. The provider runs an in-process aiohttp callback listener alongside Slack Bolt's WebSocket connection — no public ingress beyond a single `/oauth/callback` path. Includes Dynamic Client Registration with PRM-driven scope catalog, scope-merging on every authorize request (OIDC baseline + cached-token scopes + server-hinted scopes), and post-step-up permission-denied detection. See `docs/oauth.md`.
+- `slack_agents.oauth/` package — signed-state codec, HKDF/AES-GCM crypto, callback listener, ephemeral auth-prompt builder, `DBTokenStorage` bridging the MCP SDK's `TokenStorage` Protocol to the agent's storage backend.
+- `oauth_tokens` and `oauth_clients` tables on both SQLite and PostgreSQL backends (created idempotently at startup).
+- `FrameworkContext` injection in `load_plugin` — providers that declare a `framework_ctx` parameter receive a shared object holding the bot token, Slack client, storage backend, and OAuth pending-flows registry. Existing providers are unaffected.
+- `validate_oauth_env(tools_config)` consolidated startup check. Required env vars when at least one `mcp_http_oauth` provider is configured: `OAUTH_PUBLIC_URL`, `OAUTH_SECRET_KEY`. Optional: `OAUTH_BIND_HOST` (default `0.0.0.0`), `OAUTH_BIND_PORT` (default `8080`). Missing/malformed values produce a single, actionable error and refuse to start.
+- Eager-auth pre-LLM hook in `SlackAgent` — each user's first message triggers OAuth setup before the LLM is invoked, so the LLM sees real tool lists rather than an empty/placeholder set.
+- `make_tool_error(...)` helper plus `ERROR_*` and `RECOVERY_*` constants in `slack_agents.tools.base`. Uniform JSON schema for tool-error payloads in `ToolResult.content` so the LLM consuming a tool result can reason about errors (permission_denied / system_error / input_error / auth_setup_failed) uniformly. The `recovery` enum (retry / contact_admin / contact_support / abort) drives how the LLM should advise the user. See `docs/tools.md` "Tool error schema".
+- LLM error classification in `slack/agent.py` — transient provider errors (`overloaded_error`, `rate_limit_error`, `api_error`, `timeout_error`) produce friendly user messages and log at WARNING (no traceback noise); configuration errors (`authentication_error`, `permission_error`, `not_found_error`, `invalid_request_error`) stay ERROR with full traceback.
+- `cryptography` runtime dependency (HKDF + AES-GCM).
+- `docs/oauth.md` — operator guide, scope-handling story, MCP SDK workarounds, troubleshooting (Trusted Hosts and Allowed Client Scopes policy gates, post-step-up permission denial).
+
+### Changed
+
+- Every built-in tool error site (`mcp_http`, `mcp_http_oauth`, `canvas`, `user_context`, `file_exporter`, plus `agent_loop`'s unknown-tool fallback) now emits the unified structured-error JSON schema in `ToolResult.content` when `is_error=True`. Custom tools should use `make_tool_error(...)`.
+- The Slack-user-facing message on unrecognized exceptions ("Sorry, I encountered an error processing your request.") is now the fallback only — known LLM-provider errors get specific messages instead.
+- `docs/tools.md` — example uses `make_tool_error` for the unknown-tool branch; new "Tool error schema" section.
 
 ## [0.7.0] - 2026-04-14
 

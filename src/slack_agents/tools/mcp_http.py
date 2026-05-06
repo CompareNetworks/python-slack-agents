@@ -15,7 +15,15 @@ from mcp.types import BlobResourceContents, EmbeddedResource, ImageContent
 from slack_agents import UserConversationContext
 from slack_agents.llm import CHARS_PER_TOKEN
 from slack_agents.storage.base import BaseStorageProvider
-from slack_agents.tools.base import BaseToolProvider, ToolResult
+from slack_agents.tools.base import (
+    ERROR_INPUT_ERROR,
+    ERROR_SYSTEM_ERROR,
+    RECOVERY_ABORT,
+    RECOVERY_CONTACT_SUPPORT,
+    BaseToolProvider,
+    ToolResult,
+    make_tool_error,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -150,7 +158,14 @@ class Provider(BaseToolProvider):
         """Execute a tool call and return the result."""
         session = self._tool_map.get(tool_name)
         if not session:
-            return {"content": f"Unknown tool: {tool_name}", "is_error": True, "files": []}
+            return make_tool_error(
+                error=ERROR_INPUT_ERROR,
+                code="unknown_tool",
+                tool=tool_name,
+                server=self._url,
+                recovery=RECOVERY_ABORT,
+                message=f"Tool {tool_name!r} is not available on this MCP server.",
+            )
 
         logger.info("Calling MCP tool %s", tool_name)
 
@@ -189,7 +204,14 @@ class Provider(BaseToolProvider):
             }
         except Exception as e:
             logger.exception("MCP tool call failed: %s", tool_name)
-            return {"content": f"Tool execution error: {e}", "is_error": True, "files": []}
+            return make_tool_error(
+                error=ERROR_SYSTEM_ERROR,
+                tool=tool_name,
+                server=self._url,
+                recovery=RECOVERY_CONTACT_SUPPORT,
+                message=f"Tool {tool_name!r} failed: {e}",
+                details={"exception": f"{type(e).__name__}: {e}"},
+            )
 
     async def close(self) -> None:
         if self._exit_stack:

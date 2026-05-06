@@ -4,12 +4,13 @@ import asyncio
 import base64
 import json
 import logging
+import os
 import re
 
 from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 from slack_bolt.async_app import AsyncApp
 
-from slack_agents import UserConversationContext
+from slack_agents import FrameworkContext, PendingFlowsRegistry, UserConversationContext
 from slack_agents.access.base import AccessDenied
 from slack_agents.agent_loop import run_agent_loop_streaming
 from slack_agents.config import AgentConfig, load_plugin
@@ -24,7 +25,77 @@ from slack_agents.slack.streaming_formatter import StreamingFormatter
 from slack_agents.storage.base import BaseStorageProvider
 from slack_agents.tools.base import BaseFileImporterProvider, BaseToolProvider
 
+_OAUTH_PROVIDER_TYPE = "slack_agents.tools.mcp_http_oauth"
+
 logger = logging.getLogger(__name__)
+
+
+# LLM provider errors (Anthropic-style — keyed by `error.type` in the response
+# body) that we can classify into transient/configuration/unknown buckets and
+# surface as specific user messages instead of a generic "something went wrong."
+# Format: error_type → (user-facing message, log level)
+_LLM_ERROR_CLASSIFICATIONS: dict[str, tuple[str, int]] = {
+    "overloaded_error": (
+        "The LLM provider is currently overloaded. Please try your request again in a moment.",
+        logging.WARNING,
+    ),
+    "rate_limit_error": (
+        "We've hit the LLM provider's rate limit. Please wait a moment and try again.",
+        logging.WARNING,
+    ),
+    "api_error": (
+        "The LLM provider returned an internal error. Please try again in a moment.",
+        logging.WARNING,
+    ),
+    "timeout_error": (
+        "The LLM provider took too long to respond. Please try again in a moment.",
+        logging.WARNING,
+    ),
+    "authentication_error": (
+        "The agent's LLM credentials were rejected. This is a configuration "
+        "issue — please contact whoever administers this agent.",
+        logging.ERROR,
+    ),
+    "permission_error": (
+        "The LLM provider denied permission for this request. This is a "
+        "configuration issue — please contact whoever administers this agent.",
+        logging.ERROR,
+    ),
+    "invalid_request_error": (
+        "The agent sent an invalid request to the LLM provider. "
+        "This is a bug — please contact support.",
+        logging.ERROR,
+    ),
+    "not_found_error": (
+        "The agent's configured LLM model wasn't found. "
+        "This is a configuration issue — please contact whoever administers this agent.",
+        logging.ERROR,
+    ),
+}
+
+
+def _classify_llm_error(exc: BaseException) -> tuple[str, int]:
+    """Look at an exception from the LLM call and return (user_message, log_level).
+
+    Inspects `exc.body['error']['type']` (the shape Anthropic-compatible
+    providers use) — duck-typed so we don't need to import provider-specific
+    exception classes. Falls back to a generic message + ERROR level when the
+    type isn't recognized.
+    """
+    body = getattr(exc, "body", None)
+    err_type: str | None = None
+    if isinstance(body, dict):
+        err_obj = body.get("error")
+        if isinstance(err_obj, dict):
+            err_type = err_obj.get("type")
+    if err_type is None:
+        err_type = getattr(exc, "type", None)
+    if err_type and err_type in _LLM_ERROR_CLASSIFICATIONS:
+        return _LLM_ERROR_CLASSIFICATIONS[err_type]
+    return (
+        "Sorry, I encountered an error processing your request.",
+        logging.ERROR,
+    )
 
 
 class SlackAgent:
@@ -41,6 +112,8 @@ class SlackAgent:
         self._input_file_providers: list[BaseFileImporterProvider] = []
         self._file_registry: FileHandlerRegistry = FileHandlerRegistry([])
         self.conversations: ConversationManager  # set in start()
+        self._framework_ctx: FrameworkContext | None = None  # set in start()
+        self._oauth_runner = None  # set in start() if mcp_http_oauth configured
         self._user_name_cache: dict[str, str] = {}
         self._channel_name_cache: dict[str, str] = {}
         self._register_handlers()
@@ -59,6 +132,12 @@ class SlackAgent:
 
     def _register_handlers(self) -> None:
         register_tool_toggle_handlers(self.app, lambda: self.conversations)
+
+        @self.app.action("oauth_authenticate")
+        async def _ack_oauth_authenticate(ack) -> None:
+            # No-op handler. The button is a URL link — the click opens the
+            # browser. We just ack() so Slack doesn't log "unhandled request".
+            await ack()
 
         @self.app.event("assistant_thread_started")
         async def handle_assistant_thread_started(body, logger) -> None:
@@ -332,6 +411,26 @@ class SlackAgent:
                         else:
                             await store.append_text_block(message_id, block["text"], is_user=True)
 
+            # Eager OAuth setup: for any tool provider that needs per-user auth,
+            # make sure this user has a token and the provider has discovered tools
+            # before we let the LLM see the conversation. ensure_authenticated() is
+            # cheap when already done (one DB lookup); when not, it posts an auth
+            # ephemeral and blocks for up to `auth_timeout` on the user's click.
+            for _provider in self._tool_providers:
+                _ensure = getattr(_provider, "ensure_authenticated", None)
+                if _ensure is None:
+                    continue
+                try:
+                    await _ensure(user_conversation_context)
+                except Exception as _auth_err:
+                    # The provider already produced a sanitized message in the
+                    # exception text (with a support reference). Surface it as-is.
+                    msg = str(_auth_err) or (
+                        "Something went wrong setting up authentication. Please contact support."
+                    )
+                    await say(text=msg, thread_ts=thread_ts)
+                    return
+
             formatter = StreamingFormatter(client, channel, thread_ts, self.team_id, user_id)
             formatter.set_status("is thinking...")
             collected_text = ""
@@ -504,12 +603,19 @@ class SlackAgent:
 
             set_span_attrs(output=collected_text)
 
-        except Exception:
-            logger.exception("Error handling message")
-            await say(
-                text="Sorry, I encountered an error processing your request.",
-                thread_ts=thread_ts,
-            )
+        except Exception as exc:
+            user_msg, log_level = _classify_llm_error(exc)
+            if log_level >= logging.ERROR:
+                # Unknown / configuration / bug — full traceback for ops.
+                logger.exception("Error handling message")
+            else:
+                # Known transient — log as a single warning line, no traceback.
+                logger.warning(
+                    "Error handling message (transient): %s: %s",
+                    type(exc).__name__,
+                    exc,
+                )
+            await say(text=user_msg, thread_ts=thread_ts)
         finally:
             try:
                 await client.assistant_threads_setStatus(
@@ -560,7 +666,9 @@ class SlackAgent:
             try:
                 cfg = dict(tool_config)
                 type_path = cfg.pop("type")
-                provider = load_plugin(type_path, **cfg)
+                if type_path == _OAUTH_PROVIDER_TYPE:
+                    cfg.setdefault("server_id", name)
+                provider = load_plugin(type_path, framework_ctx=self._framework_ctx, **cfg)
                 named_providers.append((name, provider))
             except Exception:
                 logger.exception("Failed to create provider: %s", name)
@@ -664,25 +772,83 @@ class SlackAgent:
                 except Exception:
                     logger.warning("Heartbeat write failed", exc_info=True)
 
+    def _build_framework_context(self) -> FrameworkContext:
+        """Build the FrameworkContext shared across providers that need framework
+        services (Slack client, storage, pending OAuth flows).
+        """
+        return FrameworkContext(
+            bot_token=self.config.slack.bot_token,
+            agent_name=self.agent_name,
+            slack_client=self.app.client,
+            storage=self.conversations._storage,
+            pending_flows=PendingFlowsRegistry(),
+        )
+
+    async def _start_oauth_listener_if_needed(self) -> None:
+        """If any tool config is mcp_http_oauth, start the in-process OAuth listener
+        and stash the public URL on the FrameworkContext.
+        """
+        has_oauth = any(t.get("type") == _OAUTH_PROVIDER_TYPE for t in self.config.tools.values())
+        if not has_oauth:
+            return
+        from slack_agents.oauth.crypto import derive_subkeys
+        from slack_agents.oauth.server import start_listener
+        from slack_agents.oauth.state import NonceReplayCache
+
+        root_key = base64.b64decode(os.environ["OAUTH_SECRET_KEY"], validate=True)
+        state_key, _ = derive_subkeys(root_key)
+        nonce_cache = NonceReplayCache()
+        runner, _site = await start_listener(
+            host=os.environ.get("OAUTH_BIND_HOST", "0.0.0.0"),
+            port=int(os.environ.get("OAUTH_BIND_PORT", "8080")),
+            state_key=state_key,
+            nonce_cache=nonce_cache,
+            pending_flows=self._framework_ctx.pending_flows,
+        )
+        self._oauth_runner = runner
+        self._framework_ctx._public_url = os.environ["OAUTH_PUBLIC_URL"].rstrip("/")
+        logger.info(
+            "oauth: callback URL = %s/oauth/callback",
+            self._framework_ctx._public_url,
+        )
+        oauth_count = sum(
+            1 for t in self.config.tools.values() if t.get("type") == _OAUTH_PROVIDER_TYPE
+        )
+        logger.info("oauth: %d OAuth-protected MCP server(s) configured", oauth_count)
+
     async def start(self) -> None:
         """Start the agent in Socket Mode."""
         await self._init_storage()
-        await self._init_tools()
+        # Build framework context (needs storage + Slack client).
+        self._framework_ctx = self._build_framework_context()
+        # Conditionally start the in-process OAuth callback listener.
+        # validate_oauth_env() is called earlier in main.py, before observability
+        # spins up background threads — moving it here would let OTEL keep the
+        # process alive after SystemExit.
+        await self._start_oauth_listener_if_needed()
+        try:
+            await self._init_tools()
 
-        prompt_tokens = len(self.system_prompt) // CHARS_PER_TOKEN
-        tools_tokens = sum(
-            sum(len(json.dumps(t)) // CHARS_PER_TOKEN for t in p.tools)
-            for p in self._tool_providers
-        )
-        total = prompt_tokens + tools_tokens
-        logger.info(
-            "Context budget: instructions ~%d tokens + tools ~%d tokens = ~%d tokens",
-            prompt_tokens,
-            tools_tokens,
-            total,
-        )
+            prompt_tokens = len(self.system_prompt) // CHARS_PER_TOKEN
+            tools_tokens = sum(
+                sum(len(json.dumps(t)) // CHARS_PER_TOKEN for t in p.tools)
+                for p in self._tool_providers
+            )
+            total = prompt_tokens + tools_tokens
+            logger.info(
+                "Context budget: instructions ~%d tokens + tools ~%d tokens = ~%d tokens",
+                prompt_tokens,
+                tools_tokens,
+                total,
+            )
 
-        handler = AsyncSocketModeHandler(self.app, self.config.slack.app_token)
-        asyncio.create_task(self._heartbeat_loop(handler.client))
-        logger.info("Starting %s in Socket Mode...", self.agent_name)
-        await handler.start_async()
+            handler = AsyncSocketModeHandler(self.app, self.config.slack.app_token)
+            asyncio.create_task(self._heartbeat_loop(handler.client))
+            logger.info("Starting %s in Socket Mode...", self.agent_name)
+            await handler.start_async()
+        finally:
+            if self._oauth_runner is not None:
+                try:
+                    await self._oauth_runner.cleanup()
+                except Exception:
+                    logger.warning("oauth: listener cleanup failed", exc_info=True)

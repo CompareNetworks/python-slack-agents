@@ -1,8 +1,9 @@
 """Abstract base classes for tool providers."""
 
+import json
 import re
 from abc import ABC, abstractmethod
-from typing import Literal, TypedDict
+from typing import Any, Literal, TypedDict
 
 from slack_agents import UserConversationContext
 from slack_agents.storage.base import BaseStorageProvider
@@ -64,6 +65,73 @@ class ImageBlock(TypedDict):
 
 
 ContentBlock = TextBlock | ImageBlock
+
+
+# ---------------------------------------------------------------------------
+# Tool errors — schema for the JSON payload in `ToolResult.content` when
+# `is_error=True`. Every built-in tool produces errors in this shape so the
+# LLM consuming the result can reason about them uniformly.
+# ---------------------------------------------------------------------------
+
+# Top-level error types.
+ERROR_PERMISSION_DENIED = "permission_denied"  # auth/scope/role refusal — user-level
+ERROR_SYSTEM_ERROR = "system_error"  # operational/library/transient
+ERROR_AUTH_SETUP_FAILED = "auth_setup_failed"  # auth flow itself broke
+ERROR_INPUT_ERROR = "input_error"  # bad call / unknown tool / bad args
+
+# Recovery actions — what the LLM/user should do next.
+RECOVERY_RETRY = "retry"  # transient or user-recoverable; just try again
+RECOVERY_CONTACT_ADMIN = "contact_admin"  # requires realm/IdP/account admin
+RECOVERY_CONTACT_SUPPORT = "contact_support"  # framework operator/dev needs to look at logs
+RECOVERY_ABORT = "abort"  # nothing to do for THIS call (LLM may try a different tool)
+
+
+def make_tool_error(
+    *,
+    error: str,
+    message: str,
+    recovery: str,
+    code: str | None = None,
+    tool: str | None = None,
+    server: str | None = None,
+    details: dict[str, Any] | None = None,
+) -> "ToolResult":
+    """Build a `ToolResult` with `is_error=True` and a JSON-encoded error
+    payload in `content`.
+
+    The schema (read by the LLM consuming the tool result):
+
+    ```
+    {
+      "error":    str,              # required, e.g. ERROR_SYSTEM_ERROR
+      "code":     str  | optional,  # subtype, e.g. "scope_not_granted"
+      "tool":     str  | optional,  # tool name when relevant
+      "server":   str  | optional,  # server / provider identifier
+      "message":  str,              # required, human-readable
+      "recovery": str,              # required, one of RECOVERY_*
+      "details":  dict | optional,  # free-form, type-specific
+    }
+    ```
+
+    Use the module-level constants `ERROR_*` and `RECOVERY_*` to avoid typos.
+    `details` is intentionally schema-less — each error type can carry whatever
+    structured fields the LLM benefits from seeing (missing scopes, exception
+    types, timestamps for support correlation, etc.).
+    """
+    payload: dict[str, Any] = {"error": error, "message": message, "recovery": recovery}
+    if code is not None:
+        payload["code"] = code
+    if tool is not None:
+        payload["tool"] = tool
+    if server is not None:
+        payload["server"] = server
+    if details:
+        payload["details"] = details
+    return {
+        "content": json.dumps(payload, ensure_ascii=False),
+        "is_error": True,
+        "files": [],
+    }
 
 
 class BaseProvider(ABC):

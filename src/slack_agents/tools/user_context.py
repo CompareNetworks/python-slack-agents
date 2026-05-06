@@ -23,7 +23,15 @@ from slack_agents.slack.canvases import (
     set_canvas_access,
 )
 from slack_agents.storage.base import BaseStorageProvider
-from slack_agents.tools.base import BaseToolProvider, ToolResult
+from slack_agents.tools.base import (
+    ERROR_INPUT_ERROR,
+    ERROR_SYSTEM_ERROR,
+    RECOVERY_ABORT,
+    RECOVERY_CONTACT_SUPPORT,
+    BaseToolProvider,
+    ToolResult,
+    make_tool_error,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -123,14 +131,31 @@ class Provider(BaseToolProvider):
             elif name == "set_user_context":
                 return await self._set_user_context(arguments, user_conversation_context, storage)
             else:
-                err = {"error": f"Unknown tool: {name}"}
-                return {"content": json.dumps(err), "is_error": True, "files": []}
+                return make_tool_error(
+                    error=ERROR_INPUT_ERROR,
+                    code="unknown_tool",
+                    tool=name,
+                    recovery=RECOVERY_ABORT,
+                    message=f"Tool {name!r} is not provided by the user-context tool.",
+                )
         except CanvasError as e:
-            return {"content": json.dumps({"error": str(e)}), "is_error": True, "files": []}
+            return make_tool_error(
+                error=ERROR_SYSTEM_ERROR,
+                code="canvas_error",
+                tool=name,
+                recovery=RECOVERY_CONTACT_SUPPORT,
+                message=str(e),
+                details={"exception": f"{type(e).__name__}: {e}"},
+            )
         except Exception as e:
             logger.exception("User context tool call failed: %s", name)
-            err = {"error": f"Tool execution error: {e}"}
-            return {"content": json.dumps(err), "is_error": True, "files": []}
+            return make_tool_error(
+                error=ERROR_SYSTEM_ERROR,
+                tool=name,
+                recovery=RECOVERY_CONTACT_SUPPORT,
+                message=f"User-context tool {name!r} failed: {e}",
+                details={"exception": f"{type(e).__name__}: {e}"},
+            )
 
     async def _get_user_context(
         self,
@@ -174,19 +199,21 @@ class Provider(BaseToolProvider):
 
         # Check token limit
         if len(content) // CHARS_PER_TOKEN > self._max_tokens:
-            return {
-                "content": json.dumps(
-                    {
-                        "error": (
-                            f"Content too long: ~{len(content) // 4} tokens "
-                            f"exceeds the {self._max_tokens} token limit. "
-                            "Please shorten the content."
-                        ),
-                    }
+            return make_tool_error(
+                error=ERROR_INPUT_ERROR,
+                code="content_too_long",
+                tool="set_user_context",
+                recovery=RECOVERY_ABORT,
+                message=(
+                    f"Content too long: ~{len(content) // CHARS_PER_TOKEN} tokens "
+                    f"exceeds the {self._max_tokens} token limit. "
+                    "Please shorten the content."
                 ),
-                "is_error": True,
-                "files": [],
-            }
+                details={
+                    "estimated_tokens": len(content) // CHARS_PER_TOKEN,
+                    "max_tokens": self._max_tokens,
+                },
+            )
 
         record = await storage.get(NAMESPACE, key)
         canvas_id = record["canvas_id"] if record else None

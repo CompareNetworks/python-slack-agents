@@ -15,7 +15,15 @@ from openpyxl import Workbook
 
 from slack_agents import UserConversationContext
 from slack_agents.storage.base import BaseStorageProvider
-from slack_agents.tools.base import BaseToolProvider, ToolResult
+from slack_agents.tools.base import (
+    ERROR_INPUT_ERROR,
+    ERROR_SYSTEM_ERROR,
+    RECOVERY_ABORT,
+    RECOVERY_CONTACT_SUPPORT,
+    BaseToolProvider,
+    ToolResult,
+    make_tool_error,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -574,9 +582,21 @@ class Provider(BaseToolProvider):
     ) -> ToolResult:
         handler = self._handlers.get(name)
         if not handler:
-            return {"content": f"Unknown tool: {name}", "is_error": True, "files": []}
+            return make_tool_error(
+                error=ERROR_INPUT_ERROR,
+                code="unknown_tool",
+                tool=name,
+                recovery=RECOVERY_ABORT,
+                message=f"Tool {name!r} is not provided by the file-exporter tool.",
+            )
         try:
             return await handler(arguments)
         except Exception as e:
             logger.exception("Export tool call failed: %s", name)
-            return {"content": f"Tool execution error: {e}", "is_error": True, "files": []}
+            return make_tool_error(
+                error=ERROR_SYSTEM_ERROR,
+                tool=name,
+                recovery=RECOVERY_CONTACT_SUPPORT,
+                message=f"Export tool {name!r} failed: {e}",
+                details={"exception": f"{type(e).__name__}: {e}"},
+            )
