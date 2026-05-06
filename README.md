@@ -195,6 +195,18 @@ tools:
       - "get_document"    # exact match works too
 ```
 
+For MCP servers that require OAuth 2.1 (per-user authentication), use `mcp_http_oauth` — same auto-discovery, with each Slack user authenticating separately to the upstream service:
+
+```yaml
+tools:
+  my-oauth-mcp:
+    type: slack_agents.tools.mcp_http_oauth
+    url: "https://my-server.example.com/mcp"
+    allowed_functions: [".*"]
+```
+
+Tokens are persisted per Slack user, refresh tokens are AES-GCM-encrypted at rest, and an in-process callback listener handles the OAuth dance alongside the Slack Bolt connection. See [docs/oauth.md](https://github.com/CompareNetworks/python-slack-agents/blob/main/docs/oauth.md) for setup (env vars, tunnel for local dev, scope handling, troubleshooting).
+
 ## Project Structure
 
 Your overlay is a plain git repo — not a Python package. You edit configs, commit, and run; there's no
@@ -280,6 +292,7 @@ To create a Slack app, use the manifest in [`docs/slack-app-manifest.json`](http
 - [Setup](https://github.com/CompareNetworks/python-slack-agents/blob/main/docs/setup.md) — installation and Slack app creation
 - [Agents](https://github.com/CompareNetworks/python-slack-agents/blob/main/docs/agents.md) — creating and configuring agents
 - [Tools](https://github.com/CompareNetworks/python-slack-agents/blob/main/docs/tools.md) — MCP servers and custom tool providers
+- [OAuth-protected MCP servers](https://github.com/CompareNetworks/python-slack-agents/blob/main/docs/oauth.md) — per-Slack-user OAuth for MCP servers requiring authentication
 - [LLM](https://github.com/CompareNetworks/python-slack-agents/blob/main/docs/llm.md) — supported providers and adding your own
 - [Storage](https://github.com/CompareNetworks/python-slack-agents/blob/main/docs/storage.md) — SQLite, PostgreSQL, and custom backends
 - [Access control](https://github.com/CompareNetworks/python-slack-agents/blob/main/docs/access-control.md) — controlling who can use an agent
