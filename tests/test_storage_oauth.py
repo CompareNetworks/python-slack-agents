@@ -66,8 +66,10 @@ class TestOAuthTokens:
 
 
 class TestOAuthClients:
+    REDIRECT = "https://agent.example.com/oauth/callback"
+
     async def test_get_unknown_returns_none(self, storage):
-        assert await storage.get_oauth_client("srv") is None
+        assert await storage.get_oauth_client("srv", self.REDIRECT) is None
 
     async def test_put_then_get(self, storage):
         now = int(time.time())
@@ -79,20 +81,52 @@ class TestOAuthClients:
             created_at=now,
             updated_at=now,
         )
-        await storage.put_oauth_client("srv", row)
-        got = await storage.get_oauth_client("srv")
+        await storage.put_oauth_client("srv", self.REDIRECT, row)
+        got = await storage.get_oauth_client("srv", self.REDIRECT)
         assert got == row
 
     async def test_put_updates_existing(self, storage):
         now = int(time.time())
         await storage.put_oauth_client(
             "srv",
+            self.REDIRECT,
             OAuthClientRow("c1", None, "{}", "https://a", now, now),
         )
         await storage.put_oauth_client(
             "srv",
+            self.REDIRECT,
             OAuthClientRow("c2", "secret", "{}", "https://b", now, now + 1),
         )
-        got = await storage.get_oauth_client("srv")
+        got = await storage.get_oauth_client("srv", self.REDIRECT)
         assert got.client_id == "c2"
         assert got.client_secret == "secret"
+
+    async def test_delete(self, storage):
+        now = int(time.time())
+        await storage.put_oauth_client(
+            "srv",
+            self.REDIRECT,
+            OAuthClientRow("c", None, "{}", "https://a", now, now),
+        )
+        await storage.delete_oauth_client("srv", self.REDIRECT)
+        assert await storage.get_oauth_client("srv", self.REDIRECT) is None
+
+    async def test_isolation_per_redirect_uri(self, storage):
+        """Same server, different redirect_uri → independent cache rows."""
+        now = int(time.time())
+        red_a = "https://agent-a.example.com/oauth/callback"
+        red_b = "https://agent-b.example.com/oauth/callback"
+        await storage.put_oauth_client(
+            "srv", red_a, OAuthClientRow("c-a", None, "{}", "https://idp", now, now)
+        )
+        await storage.put_oauth_client(
+            "srv", red_b, OAuthClientRow("c-b", None, "{}", "https://idp", now, now)
+        )
+        got_a = await storage.get_oauth_client("srv", red_a)
+        got_b = await storage.get_oauth_client("srv", red_b)
+        assert got_a is not None and got_a.client_id == "c-a"
+        assert got_b is not None and got_b.client_id == "c-b"
+        # Deleting one does not affect the other.
+        await storage.delete_oauth_client("srv", red_a)
+        assert await storage.get_oauth_client("srv", red_a) is None
+        assert (await storage.get_oauth_client("srv", red_b)).client_id == "c-b"

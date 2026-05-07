@@ -133,11 +133,13 @@ CREATE TABLE IF NOT EXISTS oauth_tokens (
 );
 
 CREATE TABLE IF NOT EXISTS oauth_clients (
-    server_id            TEXT     NOT NULL PRIMARY KEY,
+    server_id            TEXT     NOT NULL,
+    redirect_uri         TEXT     NOT NULL,
     client_id            TEXT     NOT NULL,
     client_secret        TEXT,
     metadata_json        TEXT     NOT NULL,
     authorization_server TEXT     NOT NULL,
     created_at           BIGINT   NOT NULL,
-    updated_at           BIGINT   NOT NULL
+    updated_at           BIGINT   NOT NULL,
+    PRIMARY KEY (server_id, redirect_uri)
 );

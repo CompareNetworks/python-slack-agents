@@ -179,6 +179,7 @@ class TestCallToolHappyPath:
             backend=framework_ctx.storage,
             user_id="U1",
             server_id="my-mcp",
+            redirect_uri=p._redirect_uri,
             token_key=p._token_key,
         )
         await store.set_tokens(
@@ -305,6 +306,7 @@ class TestScopeMergeHook:
             backend=framework_ctx.storage,
             user_id="U1",
             server_id="my-mcp",
+            redirect_uri=p._redirect_uri,
             token_key=p._token_key,
         ).set_tokens(
             OAuthToken(
@@ -406,6 +408,7 @@ class TestScopeNotGrantedDetection:
             backend=framework_ctx.storage,
             user_id="U1",
             server_id="my-mcp",
+            redirect_uri=p._redirect_uri,
             token_key=p._token_key,
         ).set_tokens(
             OAuthToken(
@@ -465,6 +468,158 @@ class TestScopeNotGrantedDetection:
         # OIDC plumbing scopes don't pollute the resource-scope sets.
         assert "openid" not in details["required_scopes"]
         assert "offline_access" not in details["required_scopes"]
+
+
+class TestRedirectUriMismatchDetection:
+    """The `_is_redirect_uri_mismatch` helper recognises the IdP's rejection of
+    a stale cached client registration so we can wipe and re-register on the
+    next call."""
+
+    def test_recognises_keycloak_invalid_parameter(self):
+        from slack_agents.tools.mcp_http_oauth import _is_redirect_uri_mismatch
+
+        exc = Exception("Invalid parameter: redirect_uri")
+        assert _is_redirect_uri_mismatch(exc) is True
+
+    def test_recognises_redirect_uri_mismatch_phrase(self):
+        from slack_agents.tools.mcp_http_oauth import _is_redirect_uri_mismatch
+
+        exc = Exception("error: redirect_uri_mismatch")
+        assert _is_redirect_uri_mismatch(exc) is True
+
+    def test_recognises_inside_exception_chain(self):
+        from slack_agents.tools.mcp_http_oauth import _is_redirect_uri_mismatch
+
+        try:
+            try:
+                raise ValueError("Invalid parameter: redirect_uri")
+            except ValueError as inner:
+                raise RuntimeError("oauth flow failed") from inner
+        except RuntimeError as outer:
+            assert _is_redirect_uri_mismatch(outer) is True
+
+    def test_unrelated_error_returns_false(self):
+        from slack_agents.tools.mcp_http_oauth import _is_redirect_uri_mismatch
+
+        assert _is_redirect_uri_mismatch(Exception("network down")) is False
+        # "redirect_uri" alone is not enough — needs a mismatch verb too.
+        assert _is_redirect_uri_mismatch(Exception("redirect_uri set")) is False
+
+
+class TestRedirectUriMismatchRecovery:
+    """When `_handle_redirect_uri_mismatch` runs, the cached DCR row and the
+    user's tokens are both deleted so the next call re-registers and re-auths."""
+
+    async def test_deletes_client_row_and_user_tokens(self, framework_ctx):
+        from slack_agents.oauth.storage import DBTokenStorage
+        from slack_agents.storage.base import OAuthClientRow
+
+        p = McpHttpOAuthProvider(
+            url="https://srv.example.com/mcp",
+            allowed_functions=[".*"],
+            framework_ctx=framework_ctx,
+            server_id="my-mcp",
+        )
+        # Seed cached registration + a user token.
+        import time as _time
+
+        now = int(_time.time())
+        await framework_ctx.storage.put_oauth_client(
+            "my-mcp",
+            p._redirect_uri,
+            OAuthClientRow(
+                client_id="cid",
+                client_secret=None,
+                metadata_json="{}",
+                authorization_server="https://idp.example.com",
+                created_at=now,
+                updated_at=now,
+            ),
+        )
+        await DBTokenStorage(
+            backend=framework_ctx.storage,
+            user_id="U1",
+            server_id="my-mcp",
+            redirect_uri=p._redirect_uri,
+            token_key=p._token_key,
+        ).set_tokens(
+            OAuthToken(
+                access_token="t",
+                token_type="Bearer",
+                expires_in=3600,
+                refresh_token=None,
+                scope="",
+            )
+        )
+
+        await p._handle_redirect_uri_mismatch("U1")
+
+        assert await framework_ctx.storage.get_oauth_client("my-mcp", p._redirect_uri) is None
+        assert await framework_ctx.storage.get_oauth_token("U1", "my-mcp") is None
+
+    async def test_call_tool_returns_structured_error_on_mismatch(self, framework_ctx):
+        import json as _json
+
+        from slack_agents.oauth.storage import DBTokenStorage
+        from slack_agents.storage.base import OAuthClientRow
+
+        p = McpHttpOAuthProvider(
+            url="https://srv.example.com/mcp",
+            allowed_functions=[".*"],
+            framework_ctx=framework_ctx,
+            server_id="my-mcp",
+        )
+        # Seed registration + token so we can verify they get cleared.
+        import time as _time
+
+        now = int(_time.time())
+        await framework_ctx.storage.put_oauth_client(
+            "my-mcp",
+            p._redirect_uri,
+            OAuthClientRow("cid", None, "{}", "https://idp", now, now),
+        )
+        await DBTokenStorage(
+            backend=framework_ctx.storage,
+            user_id="U1",
+            server_id="my-mcp",
+            redirect_uri=p._redirect_uri,
+            token_key=p._token_key,
+        ).set_tokens(
+            OAuthToken(
+                access_token="t",
+                token_type="Bearer",
+                expires_in=3600,
+                refresh_token=None,
+                scope="",
+            )
+        )
+
+        with patch.object(
+            p,
+            "_call_mcp_with_token",
+            AsyncMock(side_effect=Exception("Invalid parameter: redirect_uri")),
+        ):
+            result = await p.call_tool(
+                tool_name="t",
+                arguments={},
+                user_conversation_context={
+                    "user_id": "U1",
+                    "channel_id": "C1",
+                    "channel_name": "c",
+                    "thread_id": None,
+                },
+                storage=framework_ctx.storage,
+            )
+
+        assert result["is_error"] is True
+        payload = _json.loads(result["content"])
+        assert payload["error"] == "system_error"
+        assert payload["code"] == "redirect_uri_mismatch"
+        assert payload["server"] == "my-mcp"
+        assert payload["details"]["redirect_uri"] == p._redirect_uri
+        # Stale state was cleared.
+        assert await framework_ctx.storage.get_oauth_client("my-mcp", p._redirect_uri) is None
+        assert await framework_ctx.storage.get_oauth_token("U1", "my-mcp") is None
 
 
 # Need this import at module level for the test above.

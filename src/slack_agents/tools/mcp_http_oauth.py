@@ -317,6 +317,7 @@ class Provider(BaseToolProvider):
         self._public_url = (
             getattr(framework_ctx, "_public_url", None) or os.environ.get("OAUTH_PUBLIC_URL", "")
         ).rstrip("/")
+        self._redirect_uri = f"{self._public_url}/oauth/callback"
         # Tools are discovered eagerly via ensure_authenticated() when the user first
         # talks to the agent (or after restart, using the cached token). Until then
         # this stays empty.
@@ -377,6 +378,7 @@ class Provider(BaseToolProvider):
             backend=self._framework_ctx.storage,
             user_id=user_id,
             server_id=self._server_id,
+            redirect_uri=self._redirect_uri,
             token_key=self._token_key,
         )
         # Make sure the metadata cache is populated FIRST. We need it for the
@@ -408,7 +410,7 @@ class Provider(BaseToolProvider):
                 exc_info=True,
             )
         client_metadata = OAuthClientMetadata(
-            redirect_uris=[f"{self._public_url}/oauth/callback"],
+            redirect_uris=[self._redirect_uri],
             client_name=f"slack-agents/{self._framework_ctx.agent_name}",
             token_endpoint_auth_method="none",
             grant_types=["authorization_code", "refresh_token"],
@@ -471,12 +473,12 @@ class Provider(BaseToolProvider):
         Idempotent — does nothing if a client is already cached for this server.
         """
         backend = self._framework_ctx.storage
-        if await backend.get_oauth_client(self._server_id) is not None:
+        if await backend.get_oauth_client(self._server_id, self._redirect_uri) is not None:
             return
         if self._cached_asm is None or self._cached_asm.registration_endpoint is None:
             return
         body: dict = {
-            "redirect_uris": [f"{self._public_url}/oauth/callback"],
+            "redirect_uris": [self._redirect_uri],
             "client_name": f"slack-agents/{self._framework_ctx.agent_name}",
             "token_endpoint_auth_method": "none",
             "grant_types": ["authorization_code", "refresh_token"],
@@ -490,12 +492,13 @@ class Provider(BaseToolProvider):
             resp = await http.post(registration_url, json=body)
             resp.raise_for_status()
             client_info = OAuthClientInformationFull.model_validate_json(resp.content)
-        # Persist via DBTokenStorage. Client info is keyed only by server_id
-        # so the user_id passed here doesn't matter for this code path.
+        # Persist via DBTokenStorage. Client info is shared across users for
+        # this (server_id, redirect_uri); the user_id passed here is irrelevant.
         await DBTokenStorage(
             backend=backend,
             user_id="__system__",
             server_id=self._server_id,
+            redirect_uri=self._redirect_uri,
             token_key=self._token_key,
         ).set_client_info(client_info)
         registered_scope = getattr(client_info, "scope", None) or "(none)"
@@ -646,6 +649,7 @@ class Provider(BaseToolProvider):
             backend=self._framework_ctx.storage,
             user_id=user_id,
             server_id=self._server_id,
+            redirect_uri=self._redirect_uri,
             token_key=self._token_key,
         )
         had_token_before = await token_storage.get_tokens() is not None
@@ -713,6 +717,28 @@ class Provider(BaseToolProvider):
         try:
             return await self._call_mcp_with_token(user_conversation_context, tool_name, arguments)
         except Exception as e:
+            # Specific recovery: IdP rejected our authorize request because the
+            # client's registered redirect_uri doesn't match what we sent.
+            # Means the cached `oauth_clients` row's redirect_uri is stale —
+            # delete it so the next call re-registers, and surface a clear
+            # message naming the cause.
+            if _is_redirect_uri_mismatch(e):
+                await self._handle_redirect_uri_mismatch(user_id)
+                return make_tool_error(
+                    error=ERROR_SYSTEM_ERROR,
+                    code="redirect_uri_mismatch",
+                    server=self._server_id,
+                    tool=tool_name,
+                    recovery=RECOVERY_RETRY,
+                    message=(
+                        "The agent's OAUTH_PUBLIC_URL doesn't match the "
+                        "redirect_uri registered with the OAuth client at "
+                        "the IdP. The cached client registration has been "
+                        "cleared — the next call will register a fresh "
+                        "client and prompt for re-auth."
+                    ),
+                    details={"redirect_uri": self._redirect_uri},
+                )
             denied = _find_user_authorization_denied(e)
             if denied is None:
                 # No IdP-level denial signaled. Did we get a final 403 from the
@@ -754,6 +780,20 @@ class Provider(BaseToolProvider):
                 user_id=user_id,
             )
 
+    async def _handle_redirect_uri_mismatch(self, user_id: str) -> None:
+        """Drop the cached `oauth_clients` row + the user's tokens after the
+        IdP rejected the registered redirect_uri. The next call re-registers
+        a fresh client and runs first-auth.
+        """
+        await self._framework_ctx.storage.delete_oauth_client(self._server_id, self._redirect_uri)
+        await self._framework_ctx.storage.delete_oauth_token(user_id, self._server_id)
+        logger.warning(
+            "oauth: cleared stale registration after IdP redirect_uri mismatch "
+            "(server=%s redirect_uri=%s)",
+            self._server_id,
+            self._redirect_uri,
+        )
+
     async def _cached_scope_set(self, user_id: str) -> set[str]:
         """Return the set of scopes on the user's currently-cached token, or
         an empty set if there's no cached token. Used to detect when a 403
@@ -765,6 +805,7 @@ class Provider(BaseToolProvider):
                 backend=self._framework_ctx.storage,
                 user_id=user_id,
                 server_id=self._server_id,
+                redirect_uri=self._redirect_uri,
                 token_key=self._token_key,
             ).get_tokens()
             if cached and cached.scope:
@@ -820,6 +861,7 @@ class Provider(BaseToolProvider):
                     backend=self._framework_ctx.storage,
                     user_id=user_id,
                     server_id=self._server_id,
+                    redirect_uri=self._redirect_uri,
                     token_key=self._token_key,
                 ).get_tokens()
                 if cached and cached.scope:
@@ -993,6 +1035,18 @@ def _detect_missing_scopes(
         if missing:
             return required, missing
     return None
+
+
+def _is_redirect_uri_mismatch(exc: BaseException) -> bool:
+    """Detect an IdP rejection of our authorize redirect_uri so the caller can
+    drop the stale cached client registration. Matches Keycloak's "Invalid
+    parameter: redirect_uri" and the RFC 6749 standard `redirect_uri_mismatch`.
+    """
+    for leaf in _flatten_exceptions(exc):
+        msg = str(leaf).lower()
+        if "invalid parameter: redirect_uri" in msg or "redirect_uri_mismatch" in msg:
+            return True
+    return False
 
 
 def _message_from_tool_error(tr: ToolResult) -> str:

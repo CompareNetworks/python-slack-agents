@@ -39,11 +39,13 @@ class DBTokenStorage:
         backend: BaseStorageProvider,
         user_id: str,
         server_id: str,
+        redirect_uri: str,
         token_key: bytes,
     ) -> None:
         self._backend = backend
         self._user_id = user_id
         self._server_id = server_id
+        self._redirect_uri = redirect_uri
         self._token_key = token_key
 
     async def get_tokens(self) -> OAuthToken | None:
@@ -102,14 +104,14 @@ class DBTokenStorage:
         await self._backend.put_oauth_token(self._user_id, self._server_id, row)
 
     async def get_client_info(self) -> OAuthClientInformationFull | None:
-        row = await self._backend.get_oauth_client(self._server_id)
+        row = await self._backend.get_oauth_client(self._server_id, self._redirect_uri)
         if row is None:
             return None
         return OAuthClientInformationFull.model_validate_json(row.metadata_json)
 
     async def set_client_info(self, client_info: OAuthClientInformationFull) -> None:
         now = int(time.time())
-        existing = await self._backend.get_oauth_client(self._server_id)
+        existing = await self._backend.get_oauth_client(self._server_id, self._redirect_uri)
         created_at = existing.created_at if existing else now
         row = OAuthClientRow(
             client_id=client_info.client_id,
@@ -119,4 +121,4 @@ class DBTokenStorage:
             created_at=created_at,
             updated_at=now,
         )
-        await self._backend.put_oauth_client(self._server_id, row)
+        await self._backend.put_oauth_client(self._server_id, self._redirect_uri, row)

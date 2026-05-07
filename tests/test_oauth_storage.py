@@ -27,7 +27,11 @@ def token_key():
 class TestSetAndGetTokens:
     async def test_roundtrip(self, storage_backend, token_key):
         store = DBTokenStorage(
-            backend=storage_backend, user_id="U1", server_id="srv", token_key=token_key
+            backend=storage_backend,
+            user_id="U1",
+            server_id="srv",
+            redirect_uri="https://agent.example.com/oauth/callback",
+            token_key=token_key,
         )
         token = OAuthToken(
             access_token="at",
@@ -45,13 +49,21 @@ class TestSetAndGetTokens:
 
     async def test_get_unknown_returns_none(self, storage_backend, token_key):
         store = DBTokenStorage(
-            backend=storage_backend, user_id="U1", server_id="srv", token_key=token_key
+            backend=storage_backend,
+            user_id="U1",
+            server_id="srv",
+            redirect_uri="https://agent.example.com/oauth/callback",
+            token_key=token_key,
         )
         assert await store.get_tokens() is None
 
     async def test_refresh_token_encrypted_at_rest(self, storage_backend, token_key):
         store = DBTokenStorage(
-            backend=storage_backend, user_id="U1", server_id="srv", token_key=token_key
+            backend=storage_backend,
+            user_id="U1",
+            server_id="srv",
+            redirect_uri="https://agent.example.com/oauth/callback",
+            token_key=token_key,
         )
         token = OAuthToken(
             access_token="at",
@@ -69,7 +81,11 @@ class TestSetAndGetTokens:
 
     async def test_decrypt_failure_deletes_row(self, storage_backend, token_key):
         store_a = DBTokenStorage(
-            backend=storage_backend, user_id="U1", server_id="srv", token_key=token_key
+            backend=storage_backend,
+            user_id="U1",
+            server_id="srv",
+            redirect_uri="https://agent.example.com/oauth/callback",
+            token_key=token_key,
         )
         await store_a.set_tokens(
             OAuthToken(
@@ -79,7 +95,11 @@ class TestSetAndGetTokens:
         # Reopen with a different key — decryption fails.
         _, other_key = derive_subkeys(secrets.token_bytes(32))
         store_b = DBTokenStorage(
-            backend=storage_backend, user_id="U1", server_id="srv", token_key=other_key
+            backend=storage_backend,
+            user_id="U1",
+            server_id="srv",
+            redirect_uri="https://agent.example.com/oauth/callback",
+            token_key=other_key,
         )
         assert await store_b.get_tokens() is None
         # Row should have been deleted.
@@ -89,7 +109,11 @@ class TestSetAndGetTokens:
 class TestClientInfo:
     async def test_roundtrip(self, storage_backend, token_key):
         store = DBTokenStorage(
-            backend=storage_backend, user_id="U1", server_id="srv", token_key=token_key
+            backend=storage_backend,
+            user_id="U1",
+            server_id="srv",
+            redirect_uri="https://agent.example.com/oauth/callback",
+            token_key=token_key,
         )
         info = OAuthClientInformationFull(
             client_id="cid",
@@ -105,10 +129,18 @@ class TestClientInfo:
         self, storage_backend, token_key
     ):
         store_a = DBTokenStorage(
-            backend=storage_backend, user_id="UA", server_id="srv", token_key=token_key
+            backend=storage_backend,
+            user_id="UA",
+            server_id="srv",
+            redirect_uri="https://agent.example.com/oauth/callback",
+            token_key=token_key,
         )
         store_b = DBTokenStorage(
-            backend=storage_backend, user_id="UB", server_id="srv", token_key=token_key
+            backend=storage_backend,
+            user_id="UB",
+            server_id="srv",
+            redirect_uri="https://agent.example.com/oauth/callback",
+            token_key=token_key,
         )
         await store_a.set_client_info(
             OAuthClientInformationFull(
@@ -119,3 +151,39 @@ class TestClientInfo:
         got = await store_b.get_client_info()
         assert got is not None
         assert got.client_id == "cid"
+
+    async def test_client_info_isolated_by_redirect_uri(self, storage_backend, token_key):
+        """Same server but different redirect_uri must register independently."""
+        store_a = DBTokenStorage(
+            backend=storage_backend,
+            user_id="U1",
+            server_id="srv",
+            redirect_uri="https://agent-a.example.com/oauth/callback",
+            token_key=token_key,
+        )
+        store_b = DBTokenStorage(
+            backend=storage_backend,
+            user_id="U1",
+            server_id="srv",
+            redirect_uri="https://agent-b.example.com/oauth/callback",
+            token_key=token_key,
+        )
+        await store_a.set_client_info(
+            OAuthClientInformationFull(
+                client_id="cid-a",
+                redirect_uris=["https://agent-a.example.com/oauth/callback"],
+            )
+        )
+        # store_b sees nothing — different redirect_uri, different cache key.
+        assert await store_b.get_client_info() is None
+        await store_b.set_client_info(
+            OAuthClientInformationFull(
+                client_id="cid-b",
+                redirect_uris=["https://agent-b.example.com/oauth/callback"],
+            )
+        )
+        # Both rows coexist.
+        got_a = await store_a.get_client_info()
+        got_b = await store_b.get_client_info()
+        assert got_a is not None and got_a.client_id == "cid-a"
+        assert got_b is not None and got_b.client_id == "cid-b"

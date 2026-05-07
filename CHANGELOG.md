@@ -1,10 +1,21 @@
-# Changelog
+we don# Changelog
 
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+
+## [0.8.1] - 2026-05-07
+
+### Fixed
+
+- `oauth_clients` cache is now keyed by `(server_id, redirect_uri)` instead of `server_id` alone. Two `mcp_http_oauth` providers pointing at the same MCP server but with different `OAUTH_PUBLIC_URL` values (e.g. agents sharing a database, or a single agent whose tunnel hostname rotates) used to collide on the cached client registration; the second one would reuse a row whose `redirect_uri` the IdP no longer accepted, producing `Invalid parameter: redirect_uri` from the IdP.
+- `mcp_http_oauth.Provider.call_tool` now detects an IdP `Invalid parameter: redirect_uri` (or `redirect_uri_mismatch`) rejection, deletes the stale cached client registration and the user's cached tokens, and surfaces a structured `system_error` with `code="redirect_uri_mismatch"` so the LLM can explain the situation. The next call re-registers a fresh client and prompts for re-auth.
+
+### Migration
+
+- The `oauth_clients` table primary key changed from `(server_id)` to `(server_id, redirect_uri)`. There is no automatic migration: any rows from 0.8.0 will be re-created on demand the first time each `(server_id, redirect_uri)` pair is used, leaving harmless orphan rows behind. Operators who want a clean slate can `DELETE FROM oauth_clients;` before upgrading.
 
 ## [0.8.0] - 2026-05-06
 

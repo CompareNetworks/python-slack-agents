@@ -94,12 +94,18 @@ class BaseStorageProvider(ABC):
         """Delete the token row for ``(user_id, server_id)`` if present."""
 
     @abstractmethod
-    async def get_oauth_client(self, server_id: str) -> OAuthClientRow | None:
-        """Return the persisted dynamic-client-registration row for ``server_id``."""
+    async def get_oauth_client(self, server_id: str, redirect_uri: str) -> OAuthClientRow | None:
+        """Return the persisted DCR row for ``(server_id, redirect_uri)`` or None."""
 
     @abstractmethod
-    async def put_oauth_client(self, server_id: str, row: OAuthClientRow) -> None:
-        """Upsert the dynamic-client-registration row for ``server_id``."""
+    async def put_oauth_client(
+        self, server_id: str, redirect_uri: str, row: OAuthClientRow
+    ) -> None:
+        """Upsert the DCR row for ``(server_id, redirect_uri)``."""
+
+    @abstractmethod
+    async def delete_oauth_client(self, server_id: str, redirect_uri: str) -> None:
+        """Delete the DCR row for ``(server_id, redirect_uri)`` if present."""
 
     async def close(self) -> None:
         """Close connections and clean up resources."""

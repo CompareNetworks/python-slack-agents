@@ -523,25 +523,27 @@ class Provider(BaseStorageProvider):
         )
         await self._db.commit()
 
-    async def get_oauth_client(self, server_id: str) -> OAuthClientRow | None:
+    async def get_oauth_client(self, server_id: str, redirect_uri: str) -> OAuthClientRow | None:
         async with self._db.execute(
             "SELECT client_id, client_secret, metadata_json, "
             "authorization_server, created_at, updated_at "
-            "FROM oauth_clients WHERE server_id=?",
-            (server_id,),
+            "FROM oauth_clients WHERE server_id=? AND redirect_uri=?",
+            (server_id, redirect_uri),
         ) as cursor:
             row = await cursor.fetchone()
         if row is None:
             return None
         return OAuthClientRow(*row)
 
-    async def put_oauth_client(self, server_id: str, row: OAuthClientRow) -> None:
+    async def put_oauth_client(
+        self, server_id: str, redirect_uri: str, row: OAuthClientRow
+    ) -> None:
         await self._db.execute(
             "INSERT INTO oauth_clients ("
-            "server_id, client_id, client_secret, metadata_json, "
+            "server_id, redirect_uri, client_id, client_secret, metadata_json, "
             "authorization_server, created_at, updated_at"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?) "
-            "ON CONFLICT(server_id) DO UPDATE SET "
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(server_id, redirect_uri) DO UPDATE SET "
             "client_id=excluded.client_id, "
             "client_secret=excluded.client_secret, "
             "metadata_json=excluded.metadata_json, "
@@ -549,6 +551,7 @@ class Provider(BaseStorageProvider):
             "updated_at=excluded.updated_at",
             (
                 server_id,
+                redirect_uri,
                 row.client_id,
                 row.client_secret,
                 row.metadata_json,
@@ -556,5 +559,12 @@ class Provider(BaseStorageProvider):
                 row.created_at,
                 row.updated_at,
             ),
+        )
+        await self._db.commit()
+
+    async def delete_oauth_client(self, server_id: str, redirect_uri: str) -> None:
+        await self._db.execute(
+            "DELETE FROM oauth_clients WHERE server_id=? AND redirect_uri=?",
+            (server_id, redirect_uri),
         )
         await self._db.commit()

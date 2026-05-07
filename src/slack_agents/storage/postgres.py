@@ -670,13 +670,14 @@ class Provider(BaseStorageProvider):
                 server_id,
             )
 
-    async def get_oauth_client(self, server_id: str) -> OAuthClientRow | None:
+    async def get_oauth_client(self, server_id: str, redirect_uri: str) -> OAuthClientRow | None:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT client_id, client_secret, metadata_json, "
                 "authorization_server, created_at, updated_at "
-                "FROM oauth_clients WHERE server_id=$1",
+                "FROM oauth_clients WHERE server_id=$1 AND redirect_uri=$2",
                 server_id,
+                redirect_uri,
             )
         if row is None:
             return None
@@ -689,24 +690,35 @@ class Provider(BaseStorageProvider):
             updated_at=row["updated_at"],
         )
 
-    async def put_oauth_client(self, server_id: str, row: OAuthClientRow) -> None:
+    async def put_oauth_client(
+        self, server_id: str, redirect_uri: str, row: OAuthClientRow
+    ) -> None:
         async with self._pool.acquire() as conn:
             await conn.execute(
                 "INSERT INTO oauth_clients ("
-                "server_id, client_id, client_secret, metadata_json, "
-                "authorization_server, created_at, updated_at"
-                ") VALUES ($1, $2, $3, $4, $5, $6, $7) "
-                "ON CONFLICT (server_id) DO UPDATE SET "
+                "server_id, redirect_uri, client_id, client_secret, "
+                "metadata_json, authorization_server, created_at, updated_at"
+                ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8) "
+                "ON CONFLICT (server_id, redirect_uri) DO UPDATE SET "
                 "client_id=EXCLUDED.client_id, "
                 "client_secret=EXCLUDED.client_secret, "
                 "metadata_json=EXCLUDED.metadata_json, "
                 "authorization_server=EXCLUDED.authorization_server, "
                 "updated_at=EXCLUDED.updated_at",
                 server_id,
+                redirect_uri,
                 row.client_id,
                 row.client_secret,
                 row.metadata_json,
                 row.authorization_server,
                 row.created_at,
                 row.updated_at,
+            )
+
+    async def delete_oauth_client(self, server_id: str, redirect_uri: str) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "DELETE FROM oauth_clients WHERE server_id=$1 AND redirect_uri=$2",
+                server_id,
+                redirect_uri,
             )
