@@ -1,10 +1,16 @@
-we don# Changelog
+# Changelog
 
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+
+### Added
+
+- `docs/private-repo.md` — "Protecting secrets in your overlay" section covering GitHub push protection (server-side block that survives `--no-verify`), a gitleaks pre-commit hook, and a one-time trufflehog history sweep. Aimed at overlay maintainers whose configs reference Slack tokens, LLM API keys, and OAuth client secrets via `{ENV_VAR}` placeholders.
+- `slack-agents init` now prints a visible "SECURITY: protect your secrets before pushing" banner at the end of scaffolding, linking to the new docs section.
+- `SECURITY.md` — pointer for overlay maintainers to the overlay security guidance.
 
 ## [0.8.1] - 2026-05-07
 
@@ -101,7 +107,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
-- `slack-agents init` now generates `.gitignore` 
+- `slack-agents init` now generates `.gitignore`
 - `.env.example` template includes comments explaining where to get each token and links to setup guide
 - `build-docker` lists required environment variables after build completes
 - `build-docker` errors if `req*.txt` files are found (dependencies must be in `pyproject.toml`)
@@ -109,7 +115,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Changed
 
-- `pyproject.toml` template uses `python-slack-agents<2` (no minimum pin) 
+- `pyproject.toml` template uses `python-slack-agents<2` (no minimum pin)
 - Setup flow uses venv-first approach: create venv, install package, then `slack-agents init`
 - Updated README, docs/setup.md, and docs/private-repo.md with new setup flow
 

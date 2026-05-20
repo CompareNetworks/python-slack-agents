@@ -107,3 +107,18 @@ def execute(args):
     print("  cp .env.example .env                      # add your tokens")
     print("  pip install -r requirements.txt           # install the framework")
     print("  slack-agents run agents/hello-world       # run the example agent")
+    print()
+    print("=" * 70)
+    print("  SECURITY: protect your secrets before pushing")
+    print("=" * 70)
+    print("  Your config.yaml will reference Slack tokens and LLM API keys")
+    print("  via {ENV_VAR} placeholders. The scaffolded .gitignore keeps")
+    print("  .env out of git, but that is one layer. Before your first push,")
+    print("  enable GitHub push protection and add a gitleaks pre-commit hook.")
+    print()
+    print("  Full guide:")
+    print(
+        "  https://github.com/CompareNetworks/python-slack-agents/blob/main/"
+        "docs/private-repo.md#protecting-secrets-in-your-overlay"
+    )
+    print("=" * 70)

@@ -79,3 +79,50 @@ No custom Dockerfile needed — `python-slack-agents` bundles one that auto-dete
 slack-agents build-docker agents/my-agent
 slack-agents build-docker agents/my-agent --push registry.example.com
 ```
+
+## Protecting secrets in your overlay
+
+Overlay configs reference secrets via `{ENV_VAR}` placeholders — Slack tokens, LLM API keys, and OAuth client secrets. The scaffolded `.gitignore` keeps `.env` out of git, but that's a single layer. A few minutes of setup adds defense in depth.
+
+### 1. Enable GitHub push protection
+
+GitHub refuses pushes that contain known provider tokens (Slack `xoxb-`/`xapp-`, Anthropic `sk-ant-`, OpenAI `sk-`, AWS, etc.) before they ever reach the remote. It cannot be bypassed by `git commit --no-verify` — the check runs server-side. Free on public repos, and included in GitHub Advanced Security on private/organisation repos.
+
+Toggle it in **Settings → Code security → Secret scanning** (enable both *Secret scanning* and *Push protection*), or in one shot via the CLI:
+
+```bash
+gh api -X PATCH repos/<org>/<repo> --input - <<'EOF'
+{
+  "security_and_analysis": {
+    "secret_scanning": {"status": "enabled"},
+    "secret_scanning_push_protection": {"status": "enabled"},
+    "secret_scanning_non_provider_patterns": {"status": "enabled"}
+  }
+}
+EOF
+```
+
+### 2. Add a gitleaks pre-commit hook
+
+Catches secrets on the developer's machine before they ever reach a remote — useful as a first line of defense and as the only layer for contributors who fork the repo. Add to your overlay's `.pre-commit-config.yaml`:
+
+```yaml
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1   # pin to a tag; bump via `pre-commit autoupdate`
+    hooks:
+      - id: gitleaks
+```
+
+Then run `pre-commit install` once per clone. Pre-commit requires a pinned `rev` for reproducibility and supply-chain safety. Keep it fresh either by running `pre-commit autoupdate` periodically or by adding a `package-ecosystem: "pre-commit"` entry to `.github/dependabot.yml` so Dependabot opens hook-bump PRs.
+
+### 3. Sweep history once
+
+Before turning the layers above on, check whether anything already leaked. Trufflehog walks every commit in your history and reports candidate secrets:
+
+```bash
+docker run --rm -v "$PWD:/repo" trufflesecurity/trufflehog:latest \
+  git file:///repo --no-update
+```
+
+If trufflehog finds a real secret, **rotate it immediately** at the issuer (Slack, Anthropic, OpenAI, etc.). Rewriting git history with `git-filter-repo` is optional — once a token has been pushed publicly, assume it's compromised and prioritise rotation over removal.
