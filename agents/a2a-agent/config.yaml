@@ -1,0 +1,67 @@
+# Agent2Agent (A2A) example — connects to a remote A2A agent.
+#
+# It points at the official "helloworld" reference agent (a2a-sdk 1.x, no API
+# key), run locally in Docker. START THE SERVER FIRST:
+#
+#   git clone --depth 1 https://github.com/a2aproject/a2a-samples /tmp/a2a-samples
+#   cd /tmp/a2a-samples/samples/python/agents/helloworld
+#   # upstream binds 127.0.0.1 inside the container; make it bind 0.0.0.0:
+#   sed -i '' "s/host='127.0.0.1'/host='0.0.0.0'/" __main__.py   # GNU sed: use  sed -i
+#   docker build -f Containerfile -t helloworld-a2a-server .
+#   docker run -d -p 9999:9999 helloworld-a2a-server
+#
+# Then run this agent:  slack-agents run agents/a2a-agent
+
+version: "1.0.0"
+schema: "slack-agents/v1"
+
+slack:
+  bot_token: "{SLACK_BOT_TOKEN}"
+  app_token: "{SLACK_APP_TOKEN}"
+
+access:
+  type: slack_agents.access.allow_all
+
+# --- Routing: enable exactly ONE of the two llm blocks below. ---
+
+# Option A (default) — smart routing: a real LLM delegates to the A2A agent as a
+# tool, decides when to call it, and synthesizes the reply.
+
+# # Try in Slack:  "ask the a2a agent to say hello to Jim"  -> it sends "Hello Jim!" to the agent.
+
+llm:
+  type: slack_agents.llm.anthropic
+  model: claude-sonnet-4-6
+  api_key: "{ANTHROPIC_API_KEY}"
+  max_tokens: 4096
+  max_input_tokens: 200000
+
+# Option B — dumb frontend (dev/debugging): no local LLM. Every user message is
+# forwarded straight to the single A2A agent and its reply relayed back. To use
+# it, comment out the Option A block above and uncomment this one. `model` is the
+# a2a tool's key under `tools:` below.
+
+# Try in Slack:  "Jim"  -> it echoes your request.
+
+#llm:
+#  type: slack_agents.a2a.proxy
+#  model: "mya2a"
+
+storage:
+  type: slack_agents.storage.sqlite
+  path: ":memory:"
+
+tools:
+  # The remote A2A agent, exposed to the LLM as one free-text tool named "mya2a".
+  mya2a:
+    type: slack_agents.a2a.agent
+    name: "mya2a"
+    url: "http://127.0.0.1:9999"
+    auth: {}
+    allowed_functions: [".*"]
+
+  # Lets the framework ACCEPT Slack file uploads; the a2a tool then forwards the
+  # raw bytes to the agent. (With Option A the LLM also sees the extracted text.)
+  import-files:
+    type: slack_agents.tools.file_importer
+    allowed_functions: [".*"]

@@ -30,6 +30,7 @@
 - [Deployment](https://raw.githubusercontent.com/CompareNetworks/python-slack-agents/main/docs/deployment.md): Docker, docker-compose, and Kubernetes
 - [CLI](https://raw.githubusercontent.com/CompareNetworks/python-slack-agents/main/docs/cli.md): Command reference
 - [Organizing agents](https://raw.githubusercontent.com/CompareNetworks/python-slack-agents/main/docs/private-repo.md): In-repo, separate directory, or private repository
+- [A2A integration](https://raw.githubusercontent.com/CompareNetworks/python-slack-agents/main/docs/a2a.md): Connect to remote Agent2Agent-protocol agents (smart router or dumb frontend topologies)
 
 ## Quick Reference
 
@@ -54,7 +55,7 @@ class Provider(BaseClass):
 ```
 
 Built-in provider packages:
-- LLM: `slack_agents.llm.anthropic`, `slack_agents.llm.openai`
+- LLM: `slack_agents.llm.anthropic`, `slack_agents.llm.openai`, `slack_agents.a2a.proxy`
 - Storage: `slack_agents.storage.sqlite`, `slack_agents.storage.postgres`
 - Access: `slack_agents.access.allow_all`, `slack_agents.access.allow_list`
-- Tools: `slack_agents.tools.mcp_http`, `slack_agents.tools.file_importer`, `slack_agents.tools.file_exporter`, `slack_agents.tools.canvas`, `slack_agents.tools.user_context`
+- Tools: `slack_agents.tools.mcp_http`, `slack_agents.tools.file_importer`, `slack_agents.tools.file_exporter`, `slack_agents.tools.canvas`, `slack_agents.tools.user_context`, `slack_agents.a2a.agent`

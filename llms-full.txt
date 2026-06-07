@@ -1356,3 +1356,592 @@ docker run --rm -v "$PWD:/repo" trufflesecurity/trufflehog:latest \
 ```
 
 If trufflehog finds a real secret, **rotate it immediately** at the issuer (Slack, Anthropic, OpenAI, etc.). Rewriting git history with `git-filter-repo` is optional — once a token has been pushed publicly, assume it's compromised and prioritise rotation over removal.
+
+---
+
+# OAuth-protected MCP servers
+
+`slack_agents.tools.mcp_http_oauth` connects to MCP servers that require OAuth 2.1
+authentication, with **per-Slack-user tokens**: each user authenticates separately,
+and the agent uses that user's access token when calling tools on their behalf.
+
+This complements `slack_agents.tools.mcp_http`, which is for servers that issue
+long-lived API keys you put in YAML headers. If your MCP server speaks the MCP
+authorization spec (Dynamic Client Registration + auth-code + PKCE), use
+`mcp_http_oauth`.
+
+## Configuration
+
+```yaml
+tools:
+  my-mcp:
+    type: slack_agents.tools.mcp_http_oauth
+    url: "https://my-server.example.com/mcp"
+    allowed_functions: [".*"]
+    init_retries: [5, 10, 30]    # optional
+    auth_timeout: 300             # optional, seconds, default 300
+```
+
+Only `url` and `allowed_functions` are required. There is intentionally no
+`client_id` / `client_secret` / `scopes` field — the provider performs Dynamic
+Client Registration against the MCP server's authorization server, registers
+with whatever scopes the server's PRM document advertises, and discovers
+runtime scopes through standard 401/403 step-up challenges.
+
+## Required environment variables
+
+These are validated at startup. If any `mcp_http_oauth` provider is configured
+and any of these are missing or malformed, the agent refuses to start with a
+single consolidated error message.
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `OAUTH_PUBLIC_URL` | yes | — | Externally reachable base URL of this agent process. Must be `https://`, or `http://` with a loopback host (`localhost`, `127.0.0.1`, `[::1]`) for local dev. |
+| `OAUTH_SECRET_KEY` | yes | — | Root key for HKDF; ≥32 bytes after base64 decode. Used to sign OAuth state tokens and encrypt refresh tokens at rest. |
+| `OAUTH_BIND_HOST` | no | `0.0.0.0` | Interface the in-process callback listener binds to. |
+| `OAUTH_BIND_PORT` | no | `8080` | TCP port for the callback listener. |
+
+### Generating `OAUTH_SECRET_KEY`
+
+```bash
+openssl rand -base64 32
+```
+
+or
+
+```bash
+python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+```
+
+Treat this value like any other long-lived secret: keep it out of source
+control, rotate it the same way you rotate database credentials. Rotating it
+forces every user to re-authenticate but does not break the agent.
+
+## Local development
+
+OAuth callbacks need a URL the user's browser can reach. For local dev use a
+tunnel (ngrok, cloudflared, tailscale funnel, etc.):
+
+```bash
+# Terminal 1 — start the tunnel pointing at your bind port:
+ngrok http 8080
+# → forwards https://abcd-1234.ngrok-free.app to localhost:8080
+
+# Terminal 2 — set env vars and run the agent:
+export OAUTH_PUBLIC_URL=https://abcd-1234.ngrok-free.app
+export OAUTH_SECRET_KEY=$(openssl rand -base64 32)
+slack-agents run agents/my-agent
+```
+
+If you'd rather not use a tunnel, you can run with
+`OAUTH_PUBLIC_URL=http://localhost:8080` — the validator allows loopback
+addresses over plain HTTP per RFC 8252.
+
+## What a Slack user sees
+
+1. They ask the bot to do something that needs OAuth-protected tools.
+2. The bot replies with an ephemeral message in the same thread (visible only to
+   them) containing an "Authenticate" button.
+3. They click; the browser opens the upstream service's login page.
+4. They log in and click Allow.
+5. The browser shows "Authentication completed — you can close this tab and
+   return to Slack."
+6. Slack shows a brief "✅ Authenticated to *server*" ephemeral, the agent
+   picks up the new token, runs tool discovery, and the conversation continues
+   normally.
+
+If they don't click within the configured `auth_timeout` (default 5 minutes),
+the agent surfaces a "timed out — please try again" error and the tool call
+ends. They can re-ask whenever they're ready and a fresh prompt appears.
+
+If the upstream tool later requires additional permissions (e.g. they had read
+access but are now trying to write), the same flow re-runs requesting the
+broader scope. Most identity providers auto-collapse the consent screen if the
+broader scope is a superset of what they've already approved.
+
+If the user's account doesn't actually have the role the upstream needs (so
+the IdP silently issues a token without the requested scope), the agent
+detects this on the next tool call and surfaces a clear permission-denied
+message naming the specific missing scope — rather than a generic error.
+
+## How scopes work
+
+Three scope-related decisions happen at different times, with different
+sources of truth. Knowing which is which makes troubleshooting much easier.
+
+### 1. DCR registration scope (one-time, per server)
+
+When the agent first encounters an OAuth-protected MCP server, it does
+Dynamic Client Registration with the server's authorization server. The
+client registration declares **all the scopes this client could ever
+legitimately request** — this is the catalog, not the per-call request.
+
+The agent uses **PRM `scopes_supported`** as that catalog: it pre-fetches
+`/.well-known/oauth-protected-resource` from the resource server and
+registers with exactly that list. No heuristics, no extrapolation.
+
+This means the **resource server's PRM document must advertise every scope
+that any of its tools might ever require**, not just the default tier. If
+PRM only advertises `mcp:foo:read` but a tool returns a 403 demanding
+`mcp:foo:write`, the registered client was never permitted to request
+`mcp:foo:write` and the step-up will fail with `invalid_scope`.
+
+### 2. Per-request authorize scope (every tool call)
+
+For each authorize request to the IdP (initial auth and step-up alike), the
+agent computes the union of three sources:
+
+```
+authorize_scope =
+    {openid, offline_access}                  # OIDC protocol baseline (always)
+  ∪ scopes from the user's currently-cached token
+  ∪ scopes the server hinted in `WWW-Authenticate scope=`
+```
+
+The OIDC baseline is added by the agent unconditionally — without `openid`
+the IdP issues a non-OIDC token (no identity claims) and without
+`offline_access` no refresh token is issued (forcing fresh auth on every
+token expiry). The cached scopes preserve what's already been granted, so
+step-up never accidentally narrows what the user has. The hint from
+`WWW-Authenticate` is what the resource server *just* asked for, this call.
+
+The resource server can be stateless: it can return either the cumulative
+set the user now needs (`scope="mcp:foo:read mcp:foo:write"`) or just the
+delta scope for this call (`scope="mcp:foo:write"`). The client merges with
+its own state either way.
+
+### 3. What the token actually grants (decided by the IdP)
+
+After the user consents, the IdP issues a token with whatever scopes their
+roles actually permit — it may silently drop scopes the user can't have.
+The agent compares the post-step-up token's scope against the server's
+demand. If a required scope wasn't granted, the agent surfaces a clean
+permission-denied error naming the specific missing scope — instead of
+retrying forever or surfacing the upstream 403 verbatim.
+
+### Resource server expectations
+
+For the agent to behave correctly out of the box, your MCP server should:
+
+- **PRM `/.well-known/oauth-protected-resource`** should advertise every
+  scope its tools might require, including step-up scopes (e.g. read AND
+  write AND admin), not just the default tier.
+- **401 responses** (no token at all) should include `scope=` with the
+  minimum needed to use the resource (typically the read-equivalent).
+- **403 responses** (token with insufficient scope) should include
+  `WWW-Authenticate: Bearer error="insufficient_scope" scope="…"` per RFC
+  9470, naming the scope(s) needed for this specific call. The server can
+  return either the cumulative set or the delta — the client tolerates both.
+- **OIDC scopes** (`openid`, `offline_access`) don't need to appear in
+  either header — the client always adds them on its own.
+
+## Token storage
+
+Tokens are persisted via the agent's normal storage backend (SQLite or
+Postgres) in two new tables:
+
+- `oauth_tokens` — per (user_id, server_id) access token + encrypted refresh
+  token, scopes, expiry.
+- `oauth_clients` — per server_id Dynamic Client Registration result, shared
+  across all users connecting to that server through this agent.
+
+Refresh tokens are AES-GCM-encrypted at rest using a subkey derived from
+`OAUTH_SECRET_KEY` via HKDF. Access tokens are short-lived and stored
+plaintext (still in the private DB).
+
+## Troubleshooting
+
+**"Configuration error: ... OAUTH_PUBLIC_URL is not set"** — set the env vars
+listed in the message and restart.
+
+**"Authentication timed out"** — the user didn't click the link within
+`auth_timeout`. They can re-ask the bot whenever they're ready.
+
+**"<server> does not support dynamic client registration"** — the upstream
+authorization server doesn't speak RFC 7591, or it has a Client Registration
+Policy that rejects requests from your agent's host. Common Keycloak gates:
+
+- *Trusted Hosts* policy — the realm admin must add your agent's
+  externally-reachable host to the trusted-hosts list.
+- A CDN/WAF in front of the IdP — some Cloudflare bot-management rules block
+  anonymous DCR requests; the realm admin needs an exception for the
+  `/clients-registrations/openid-connect` endpoint.
+
+This provider is DCR-only by design. Static pre-registered client credentials
+are not currently supported.
+
+**`invalid_scope` on step-up after a successful first auth** — the
+DCR-registered client doesn't have the requested scope in its allowed-request
+list, even though it would have been included in the registration request.
+This is Keycloak's *Allowed Client Scopes* policy under
+`Realm Settings → Client Registration → Anonymous Access Policies`: the
+realm silently filters DCR registration scope to a permitted subset. The
+realm admin must add the missing scope (e.g. `mcp:foo:write`) to that
+policy. Verify what the realm actually registered for your client by querying
+the local DB:
+
+```bash
+sqlite3 /tmp/<agent>.slack-agents.db \
+  "SELECT json_extract(metadata_json, '\$.scope') FROM oauth_clients WHERE server_id='<server>';"
+```
+
+If a scope is missing here, the policy filtered it out at DCR time.
+
+**"This action cannot be run on `<server>`: your account does not have a role
+granting the required scope"** — the IdP issued a token but silently dropped
+the requested scope because the user's role doesn't include it. The user (or
+their admin) needs to grant the missing scope at the role level. The agent
+names the specific missing scope in the message.
+
+**"You declined access"** — the user clicked Deny on the consent screen, or
+the IdP returned `error=access_denied`. They can re-ask to retry.
+
+**Tokens disappear after a key rotation** — expected. Rotating
+`OAUTH_SECRET_KEY` invalidates all stored refresh tokens (the agent detects
+this on the first read and deletes the row, then prompts for fresh auth on the
+next call).
+
+## Implementation notes
+
+- The in-process callback listener runs alongside the Slack Bolt connection
+  (same asyncio loop, same process). It only listens when at least one
+  `mcp_http_oauth` provider is configured.
+- The listener exposes exactly two routes: `/oauth/start/{signed_state}` and
+  `/oauth/callback`. Anything else returns 404.
+- OAuth state is signed (HMAC-SHA256) and includes a single-use nonce; replays
+  are rejected.
+- Restarting the agent during a pending auth flow drops that flow — the user
+  re-asks and gets a fresh prompt. Persistent mid-flow recovery is intentionally
+  not implemented.
+
+### MCP SDK workarounds
+
+The provider patches around four behaviors of the `mcp` Python SDK
+(`mcp.client.auth`) at the time of writing. When the SDK addresses any of
+these upstream, the corresponding shim can be removed:
+
+1. **Pre-DCR with full PRM scope set.** The SDK's `async_auth_flow`
+   overwrites `client_metadata.scope` with the runtime authorize scope
+   (`get_client_metadata_scopes`) *before* running DCR. If we let the SDK do
+   DCR, the registered client gets only "what's needed for the current
+   operation," not the full catalog, and step-up later fails with
+   `invalid_scope`. We do DCR ourselves with PRM's `scopes_supported`,
+   persist the result, and the SDK's `if not self.context.client_info: …
+   register …` branch is skipped.
+2. **Discovery on every fresh `OAuthClientProvider`.** The SDK's 403 step-up
+   path calls `_perform_authorization()` without first running protected-
+   resource discovery, so a freshly constructed provider falls back to
+   `urljoin(server_url, "/authorize")` (wrong when the AS is on a different
+   host). We pre-populate `oauth.context.protected_resource_metadata` and
+   `oauth_metadata` from a per-Provider cache.
+3. **`token_expiry_time` not propagated from storage.** The SDK's
+   `_initialize` loads `current_tokens` from storage but doesn't set
+   `token_expiry_time`, so `is_token_valid()` returns True for any cached
+   token regardless of actual expiry — meaning a stale token is sent at
+   restart, the server returns 401, the SDK skips the refresh-token branch
+   entirely, and the user is re-prompted. We force `_initialize` plus
+   `update_token_expiry(tokens)` after construction so refresh works
+   silently across restarts.
+4. **Scope merge on `WWW-Authenticate`.** The SDK uses the server's
+   `WWW-Authenticate scope=` value verbatim, dropping anything the cached
+   token already had and the OIDC baseline. We attach an httpx response
+   hook to every MCP request that augments the header in place to be the
+   union of `{openid, offline_access}` ∪ cached-token scopes ∪ server-hinted
+   scopes, so the SDK's verbatim use produces the correct cumulative set.
+
+Each shim is annotated in the source with a comment explaining the SDK
+behavior it works around.
+
+---
+
+# Agent2Agent (A2A) integration
+
+`slack_agents.a2a.agent` and `slack_agents.a2a.proxy` connect this framework
+to remote agents over the
+[Agent2Agent protocol](https://a2a-protocol.org). A2A is an interaction
+protocol — the remote agent is an opaque, possibly-conversational message
+endpoint that describes itself via an Agent Card. The framework treats it as a
+single free-text channel (not a menu of typed tools the way MCP does).
+
+Built on the official [`a2a-sdk`](https://github.com/a2aproject/a2a-python)
+(1.x, protobuf-based). All SDK-specific code is isolated in
+`slack_agents.a2a.client`; the rest of the package depends only on a small
+stable interface, so SDK version changes are contained to one module.
+
+Two deployment topologies are supported from one codebase:
+
+- **Option A — smart router.** A real local LLM (`slack_agents.llm.anthropic`,
+  etc.) orchestrates a conversation and delegates to one or more remote A2A
+  agents exposed as tools (`slack_agents.a2a.agent`). The local LLM decides
+  when and how to invoke each agent, synthesizes the replies, and continues the
+  conversation normally. Multiple A2A agents can coexist alongside other tool
+  providers.
+- **Option B — dumb frontend.** No local reasoning at all. `slack_agents.a2a.proxy`
+  forwards every user message to a single remote A2A agent and relays the reply
+  back. Slack becomes a thin chat front-end; the intelligence lives entirely in
+  the remote agent. This is primarily a **development/debugging convenience** for
+  poking at an A2A agent directly through Slack — Option A is the production shape.
+
+## Configuration
+
+### Option A — smart router
+
+```yaml
+llm:
+  type: slack_agents.llm.anthropic
+  model: claude-sonnet-4-6
+  api_key: "{ANTHROPIC_API_KEY}"
+  max_tokens: 4096
+  max_input_tokens: 200000
+tools:
+  research-agent:
+    type: slack_agents.a2a.agent
+    url: "https://research.example.com"
+    auth: { type: bearer, token: "{RESEARCH_A2A_TOKEN}" }
+    poll_interval: 5
+    max_task_lifetime: 3600
+    allowed_functions: [".*"]
+```
+
+### Option B — dumb frontend
+
+```yaml
+llm:
+  type: slack_agents.a2a.proxy
+  model: "mya2a"
+  max_input_tokens: 200000
+tools:
+  mya2a:
+    type: slack_agents.a2a.agent
+    url: "https://remote-agent.example.com"
+    auth: { type: bearer, token: "{A2A_API_KEY}" }
+    allowed_functions: [".*"]
+```
+
+The system prompt is ignored in Option B; it is used normally in Option A.
+
+## `a2a.agent` — tool provider
+
+`slack_agents.a2a.agent` is a `BaseToolProvider`. At startup it fetches the
+remote agent's Agent Card, builds a single tool definition from the card's
+name and description, and registers it like any other tool.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `url` | `str` | required | Base URL of the remote agent. The framework tries `<url>/.well-known/agent-card.json` automatically. |
+| `auth` | `dict` | none | Auth credentials. See [Auth](#auth) below. |
+| `name` | `str` | — | Override the tool name derived from the Agent Card. Use this when the card's name would produce an inconvenient slug, or when two agents would otherwise collide. |
+| `allowed_functions` | `list[str]` | required | Regex filters. Because every A2A provider exposes exactly one tool, `[".*"]` is almost always correct. |
+| `timeout` | `float` | `300` | HTTP timeout in seconds for individual A2A requests. |
+| `poll_interval` | `float` | `5` | Seconds between polling attempts for long-running tasks. |
+| `max_task_lifetime` | `float` | `3600` | Maximum seconds to poll before abandoning a task and delivering a timeout message. |
+
+**One tool per agent.** A2A is a single opaque channel — it has no mechanism to
+advertise a menu of typed tools the way MCP does. Each `a2a.agent` provider
+exposes exactly one free-text tool named after the agent (or overridden by
+`name`):
+
+```json
+{
+  "name": "<name>",
+  "description": "<from Agent Card>",
+  "input_schema": {
+    "type": "object",
+    "properties": { "message": { "type": "string" } },
+    "required": ["message"]
+  }
+}
+```
+
+**Conversation continuity.** The framework tracks the A2A `contextId` (and, for
+multi-turn tasks, the `taskId`) per Slack thread, transparently — the LLM never
+sees or passes these. Successive messages in the same thread are sent on the
+same `contextId` so the remote agent can keep conversational state.
+
+When the agent replies with an **`input-required`** (or `auth-required`) state —
+i.e. it is mid-task and wants another message — the framework relays the agent's
+prompt to the user and **threads the same `taskId`** on the next message, so the
+exchange continues the *same* Task (and its server-side state). When the task
+reaches a terminal state, the saved `taskId` is cleared and the next message
+starts a fresh Task. This is what makes multi-turn agents (e.g. a step-by-step
+form or a guessing game) behave correctly instead of restarting each turn.
+
+**Files.** File attachments flow in both directions. A file a user uploads in
+Slack is forwarded to the agent as an A2A `raw` part (alongside the text); a
+file the agent returns as an artifact is surfaced back into the Slack thread as
+an upload. Non-text artifacts (CSV, PDF, …) come through as files; text
+artifacts are used as the reply.
+
+To **send** files you must also configure a file-import handler (e.g.
+`slack_agents.tools.file_importer`) in `tools:` — the framework only accepts
+uploads it has a handler for, and the a2a tool then forwards the raw bytes:
+
+```yaml
+tools:
+  mya2a:
+    type: slack_agents.a2a.agent
+    url: "https://remote-agent.example.com"
+    allowed_functions: [".*"]
+  import-files:
+    type: slack_agents.tools.file_importer
+    allowed_functions: [".*"]
+```
+
+## `a2a.proxy` — passthrough LLM
+
+`slack_agents.a2a.proxy` is a `BaseLLMProvider` that does no local reasoning.
+It drives the same conversation loop as any other LLM provider, but instead of
+calling an LLM it routes directly to the configured A2A tool.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `model` | `str` | — | Name of the target `a2a.agent` tool (the key under `tools:` in `config.yaml`). When set, it is always used. When omitted, the proxy auto-selects the tool **only if exactly one** is configured; with more than one tool and no `model:`, startup fails with an error. |
+| `max_input_tokens` | `int` | `200000` | Context-window guard, passed through to the loop. |
+
+## Auth
+
+Phase 1 supports static credentials only, resolved from environment variables
+at startup via the standard `{ENV_VAR}` interpolation.
+
+```yaml
+# Bearer token — Authorization: Bearer <token>
+auth: { type: bearer, token: "{A2A_API_KEY}" }
+
+# Arbitrary header
+auth: { type: header, name: "X-API-Key", value: "{A2A_API_KEY}" }
+
+# No auth (default when omitted)
+auth: { type: none }
+```
+
+Per-user OAuth auth (reusing the `oauth/` package) is planned for a future
+release.
+
+## Long-running tasks
+
+The A2A protocol distinguishes between tasks that complete quickly and tasks
+that may take minutes or hours. The framework handles both transparently.
+
+The client sends every message with `blocking: true`, requesting that the
+server wait for completion before responding. This is only a hint — the server
+is free to return a non-terminal (`working`) task for long jobs.
+
+**Synchronous path.** If the remote agent returns a terminal result
+(`completed`, `failed`, `canceled`, or `rejected`) immediately, the result is
+returned inline to the LLM (Option A) or relayed directly to Slack (Option B).
+
+**Background-polling path.** If the remote agent returns a non-terminal
+(`submitted` or `working`) task, the framework:
+
+1. Persists an in-flight record (task ID, context, thread, channel) to the
+   storage backend.
+2. Returns an acknowledgement to the LLM/proxy immediately
+   ("Started a longer task — I'll post the result here when it's ready.").
+3. Spawns a background poller that calls `tasks/get` every `poll_interval`
+   seconds until the task reaches a terminal state or `max_task_lifetime` is
+   exceeded.
+4. On completion, delivers the result **out-of-band** into the original Slack
+   thread:
+   - **Option A (real LLM):** the result is injected as a synthetic inbound
+     turn and the standard loop re-runs, so the local LLM can interpret or act
+     on it before replying to the user.
+   - **Option B (proxy):** the result text is posted directly to the thread
+     without re-entering the loop (the proxy has no intelligence to add).
+
+This is entirely outbound — the background poller calls the remote agent's
+`tasks/get` endpoint on a timer. No public URL or inbound HTTP listener is
+needed. The Socket Mode deploy-anywhere property is preserved.
+
+**Crash resilience.** In-flight task records are persisted in the storage
+backend. If the agent process restarts while tasks are in flight, they are
+re-discovered at startup and pollers are resumed automatically.
+
+## What a Slack user sees
+
+**For a fast response (synchronous path):**
+
+1. User asks the bot something.
+2. The bot forwards the message to the remote A2A agent and replies with the
+   result, same as any other tool call.
+
+**For a long-running task (async path):**
+
+1. User asks the bot something.
+2. The bot replies: "Started a longer task — I'll post the result here when
+   it's ready."
+3. When the remote agent finishes, the result appears in the same Slack thread.
+
+## Trying it against a reference agent
+
+You don't need to write an A2A agent to try the integration — point it at the
+official [`helloworld`](https://github.com/a2aproject/a2a-samples/tree/main/samples/python/agents/helloworld)
+sample (a2a-sdk 1.x, no API key). It's a simple echo, so it exercises the core
+path — Agent Card resolution, send, completion, artifact handling — but not
+multi-turn or files.
+
+```bash
+git clone --depth 1 https://github.com/a2aproject/a2a-samples /tmp/a2a-samples
+cd /tmp/a2a-samples/samples/python/agents/helloworld
+
+# The upstream Containerfile's CMD passes --host 0.0.0.0, but __main__.py hardcodes
+# 127.0.0.1, so it binds container-loopback and isn't reachable from the host.
+# Make it bind 0.0.0.0 (the card's advertised url stays 127.0.0.1:9999, which is
+# correct for a client on the host):
+sed -i '' "s/host='127.0.0.1'/host='0.0.0.0'/" __main__.py   # GNU sed: use  sed -i
+
+docker build -f Containerfile -t helloworld-a2a-server .
+docker run -d -p 9999:9999 helloworld-a2a-server
+```
+
+Set `url: "http://127.0.0.1:9999"` in your `a2a.agent` config and message the
+bot — it replies `Hello, World! I have received your request (...)`. A ready-made
+example lives at [`agents/a2a-agent/config.yaml`](../agents/a2a-agent/config.yaml),
+which documents both the smart-routing and proxy topologies (proxy commented out
+for easy switching) and repeats these server-start steps inline.
+
+**Integration test.** `tests/a2a/test_integration.py` drives the real client
+against a live agent and is **skipped unless `A2A_TEST_URL` is set**, so it
+never affects CI:
+
+```bash
+A2A_TEST_URL=http://127.0.0.1:9999 pytest tests/a2a/test_integration.py -v
+```
+
+The assertions are agent-agnostic — the same test works against any conformant
+A2A agent.
+
+## Current limitations
+
+The following are not yet implemented. They are planned for future releases.
+
+- **Files: image uploads and the async path.** *Receiving* files works for any
+  type. When *sending*, only non-image uploads (CSV, PDF, DOCX, …) are forwarded
+  — images are not yet — and files are forwarded/surfaced only on the synchronous
+  path (a long-running task delivered out-of-band carries its text, not files).
+- **Atomic responses.** Responses are collected in full before being posted.
+  Token-by-token streaming to Slack is not supported yet.
+- **Static auth only.** Auth credentials are fixed at startup from environment
+  variables. Per-Slack-user OAuth (each user authenticates separately to the
+  remote agent) is not yet supported.
+- **No push notifications.** The framework polls; it does not register a push
+  webhook with the remote agent. This is correct and complete — polling is
+  sufficient — but a push path would reduce latency for very long tasks.
+- **No A2A server mode.** This framework cannot be addressed as an A2A agent
+  by other agents. It is a client only.
+
+## Troubleshooting
+
+**"A2A agent returned a long-running task but async delivery is unavailable."**
+— the `a2a.agent` provider was not given a `framework_ctx` (injected
+automatically by the framework when the provider is loaded via `config.yaml`).
+This should not happen in normal operation; it can appear in test setups that
+construct the provider directly without the framework context.
+
+**The background poller never delivers a result.** Check that `poll_interval`
+and `max_task_lifetime` are appropriate for the remote agent. If the agent
+takes longer than `max_task_lifetime`, the task is abandoned and a timeout
+message is posted to the thread. Increase `max_task_lifetime` if needed.
+
+**"a2a.proxy: set `model:` to the target a2a tool name"** — you have more than
+one tool configured and the proxy doesn't know which one to route to. Set
+`model:` under the `llm:` section to the key of the intended `a2a.agent` tool.

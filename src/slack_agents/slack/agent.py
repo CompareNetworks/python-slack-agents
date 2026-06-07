@@ -106,6 +106,10 @@ class SlackAgent:
         self.llm = self._init_llm()
         self._access_provider = self._init_access()
         self.app = AsyncApp(token=config.slack.bot_token)
+        # The bot's Slack Web API client. Bolt also injects this as `client` into
+        # event handlers; we keep a direct reference so non-event code paths
+        # (e.g. async A2A delivery) can post without a Bolt-provided client/say.
+        self._slack_client = self.app.client
         self.bot_user_id: str | None = None
         self.team_id: str | None = None
         self._tool_providers: list = []
@@ -319,6 +323,42 @@ class SlackAgent:
         except Exception:
             pass
 
+        await self._run_turn(channel, thread_ts, user_id, text, files)
+
+    async def _run_turn(
+        self,
+        channel: str,
+        thread_ts: str,
+        user_id: str,
+        text: str,
+        files: list | None = None,
+    ) -> None:
+        """Run one agent turn from an arbitrary trigger (Slack event OR async delivery).
+
+        Owns the history-load → run_agent_loop_streaming → stream/format → persist
+        body. Event-specific concerns (access check, "is thinking" status,
+        file extraction) live in the caller. The `say`/`client` used here are
+        reconstructed from the Slack client so this works without a Bolt-provided
+        `say` (e.g. for out-of-band async A2A delivery).
+        """
+        files = files or []
+        client = self._slack_client
+
+        async def say(**kw):
+            kw.setdefault("channel", channel)
+            return await client.chat_postMessage(**kw)
+
+        display_name = await self._resolve_user_name(client, user_id)
+        channel_name = await self._resolve_channel_name(client, channel)
+        user_conversation_context = UserConversationContext(
+            user_id=user_id,
+            user_name=display_name,
+            user_handle=display_name,
+            channel_id=channel,
+            channel_name=channel_name,
+            thread_id=thread_ts,
+        )
+
         try:
             storage = self.conversations._storage
             set_span_attrs(
@@ -363,6 +403,21 @@ class SlackAgent:
                 text, files, user_conversation_context, storage
             )
             messages.append(Message(role="user", content=user_content))
+
+            # Make this turn's raw uploads available to tools (e.g. a2a.agent forwards
+            # them as attachments). Non-image files carry raw_bytes; cleared in `finally`.
+            if self._framework_ctx is not None:
+                uploads = [
+                    {
+                        "data": m["raw_bytes"],
+                        "filename": m.get("filename", "file"),
+                        "mimeType": m.get("mimetype", "application/octet-stream"),
+                    }
+                    for m in file_meta
+                    if m and m.get("raw_bytes")
+                ]
+                if uploads:
+                    self._framework_ctx.pending_uploads[thread_ts] = uploads
 
             message_id = await store.create_message(
                 conversation_id,
@@ -617,12 +672,39 @@ class SlackAgent:
                 )
             await say(text=user_msg, thread_ts=thread_ts)
         finally:
+            if self._framework_ctx is not None:
+                self._framework_ctx.pending_uploads.pop(thread_ts, None)
             try:
                 await client.assistant_threads_setStatus(
                     channel_id=channel, thread_ts=thread_ts, status=""
                 )
             except Exception:
                 pass
+
+    async def deliver_async_result(
+        self,
+        *,
+        channel_id: str,
+        thread_id: str,
+        user_id: str,
+        text: str,
+        is_error: bool,
+    ) -> None:
+        """Surface a long-running A2A task's result into its Slack thread.
+
+        Routes by LLM type: the dumb a2a.proxy (which advertises
+        ``relays_async_raw = True``) just posts the result text raw — re-entering
+        the loop would bounce it back to the A2A agent. A real LLM re-enters the
+        loop via ``_run_turn`` so it can react to / synthesize the result, and
+        the turn persists naturally.
+        """
+        if getattr(self.llm, "relays_async_raw", False):
+            await self._slack_client.chat_postMessage(
+                channel=channel_id, thread_ts=thread_id, text=text
+            )
+            return
+        prefix = "A long-running task failed: " if is_error else "A delegated task finished:\n\n"
+        await self._run_turn(channel_id, thread_id, user_id, f"{prefix}{text}")
 
     async def _build_user_content(
         self,
@@ -782,6 +864,7 @@ class SlackAgent:
             slack_client=self.app.client,
             storage=self.conversations._storage,
             pending_flows=PendingFlowsRegistry(),
+            deliver_async_result=self.deliver_async_result,
         )
 
     async def _start_oauth_listener_if_needed(self) -> None:

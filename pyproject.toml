@@ -41,6 +41,7 @@ dependencies = [
     "openpyxl>=3.1,<4",
     "fpdf2>=2.8,<3",
     "python-pptx>=1.0,<2",
+    "a2a-sdk>=1.0,<2",
 ]
 
 [project.urls]

@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- **Agent2Agent (A2A) protocol integration** over the official `a2a-sdk` (1.x, protobuf), isolated behind `slack_agents.a2a.client`. Two topologies: `slack_agents.a2a.agent` exposes a remote A2A agent as a single free-text tool a real LLM delegates to (Option A, smart routing), and `slack_agents.a2a.proxy` turns Slack into a dumb frontend for one agent (Option B, dev/debugging). Features: per-thread `contextId` + `taskId` threading for correct multi-turn (`input-required`) conversations; synchronous replies plus detached background polling with out-of-band delivery for long-running (`working`) tasks (real LLMs re-process the result, the proxy posts it raw); bidirectional file attachments (Slack upload → A2A `raw` part, file artifact → Slack upload); static bearer/header auth. Includes an env-gated live integration test (`A2A_TEST_URL`). See `docs/a2a.md`.
 - `docs/private-repo.md` — "Protecting secrets in your overlay" section covering GitHub push protection (server-side block that survives `--no-verify`), a gitleaks pre-commit hook, and a one-time trufflehog history sweep. Aimed at overlay maintainers whose configs reference Slack tokens, LLM API keys, and OAuth client secrets via `{ENV_VAR}` placeholders.
 - `slack-agents init` now prints a visible "SECURITY: protect your secrets before pushing" banner at the end of scaffolding, linking to the new docs section.
 - `SECURITY.md` — pointer for overlay maintainers to the overlay security guidance.

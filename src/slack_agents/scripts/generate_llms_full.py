@@ -56,6 +56,8 @@ DOCS = [
     "docs/observability.md",
     "docs/deployment.md",
     "docs/private-repo.md",
+    "docs/oauth.md",
+    "docs/a2a.md",
 ]
 
 

@@ -76,3 +76,10 @@ class FrameworkContext:
     slack_client: object = None
     storage: object = None
     pending_flows: PendingFlowsRegistry = field(default_factory=PendingFlowsRegistry)
+    # Called by async A2A delivery to surface a long-running task's result.
+    # Signature: deliver_async_result(channel_id, thread_id, user_id, text, is_error)
+    deliver_async_result: object = None
+    # Per-turn raw file uploads, keyed by thread_id, populated by SlackAgent._run_turn so
+    # tools (e.g. a2a.agent) can forward attachments. Each value is a list of
+    # {data: bytes, filename, mimeType}. Cleared after each turn.
+    pending_uploads: dict = field(default_factory=dict)

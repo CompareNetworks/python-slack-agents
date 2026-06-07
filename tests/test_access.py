@@ -158,6 +158,9 @@ class TestAgentAccessIntegration:
 
         client = AsyncMock()
         say = AsyncMock()
+        # The per-turn body posts via the agent's own Slack client (reconstructed
+        # inside _run_turn), not the Bolt-injected one; point it at the mock too.
+        agent._slack_client = client
 
         await agent._handle_message(
             text="hello",
