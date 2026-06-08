@@ -20,6 +20,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 - **BREAKING (OAuth):** the in-process HTTP listener is now a shared ingress for OAuth callbacks and A2A push. Its env vars were renamed — `OAUTH_PUBLIC_URL` → `PUBLIC_URL`, `OAUTH_BIND_HOST` → `HTTP_BIND_HOST`, `OAUTH_BIND_PORT` → `HTTP_BIND_PORT` — with **no aliases**. (`OAUTH_SECRET_KEY` is unchanged.) Agents using OAuth must rename these in their environment. The startup validator fails fast with a clear message naming `PUBLIC_URL` when OAuth or push is configured but the var is missing.
 
+### Security
+
+- Dependency security updates clearing all open advisories. Lifted the speculative `cryptography` upper cap (`<46`) that had blocked the patch (the fix shipped in the next major) and raised the floor to `>=46.0.7`; refreshed the lockfile to current releases: `cryptography` 48, `aiohttp` 3.14.1, `pillow` 12.2.0, `lxml` 6.1.1, `urllib3` 2.7.0, `python-multipart` 0.0.32, `starlette` 1.2.1, `anthropic` 0.107.1, `pygments` 2.20.0.
+
 ## [0.8.1] - 2026-05-07
 
 ### Fixed
