@@ -6,17 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-06-07
+
 ### Added
 
 - **A2A push notifications (receiving).** A push-capable agent (`capabilities.pushNotifications`) can deliver task updates — status messages and file artifacts — to the Slack thread out-of-band, including reports that arrive after a synchronous reply. Opt in per agent with `push_notifications: true`. The framework registers the webhook inline on the first send with a random per-task token, validates the `X-A2A-Notification-Token` header, correlates by `taskId`, and de-duplicates by message/artifact id (the server re-pushes the immediate reply). The OAuth HTTP sidecar is generalized into a shared ingress (one listener starting for OAuth or push), configured by the new `PUBLIC_URL` / `HTTP_BIND_HOST` / `HTTP_BIND_PORT` env vars (see Changed). Verified end-to-end against a live agent. See `docs/a2a.md`.
-
-### Changed
-
-- **BREAKING (OAuth):** the in-process HTTP listener is now a shared ingress for OAuth callbacks and A2A push. Its env vars were renamed — `OAUTH_PUBLIC_URL` → `PUBLIC_URL`, `OAUTH_BIND_HOST` → `HTTP_BIND_HOST`, `OAUTH_BIND_PORT` → `HTTP_BIND_PORT` — with **no aliases**. (`OAUTH_SECRET_KEY` is unchanged.) Agents using OAuth must rename these in their environment. The startup validator fails fast with a clear message naming `PUBLIC_URL` when OAuth or push is configured but the var is missing.
 - **Agent2Agent (A2A) protocol integration** over the official `a2a-sdk` (1.x, protobuf), isolated behind `slack_agents.a2a.client`. Two topologies: `slack_agents.a2a.agent` exposes a remote A2A agent as a single free-text tool a real LLM delegates to (Option A, smart routing), and `slack_agents.a2a.proxy` turns Slack into a dumb frontend for one agent (Option B, dev/debugging). Features: per-thread `contextId` + `taskId` threading for correct multi-turn (`input-required`) conversations; synchronous replies plus detached background polling with out-of-band delivery for long-running (`working`) tasks (real LLMs re-process the result, the proxy posts it raw); bidirectional file attachments (Slack upload → A2A `raw` part, file artifact → Slack upload); static bearer/header auth. Includes an env-gated live integration test (`A2A_TEST_URL`). See `docs/a2a.md`.
 - `docs/private-repo.md` — "Protecting secrets in your overlay" section covering GitHub push protection (server-side block that survives `--no-verify`), a gitleaks pre-commit hook, and a one-time trufflehog history sweep. Aimed at overlay maintainers whose configs reference Slack tokens, LLM API keys, and OAuth client secrets via `{ENV_VAR}` placeholders.
 - `slack-agents init` now prints a visible "SECURITY: protect your secrets before pushing" banner at the end of scaffolding, linking to the new docs section.
 - `SECURITY.md` — pointer for overlay maintainers to the overlay security guidance.
+
+### Changed
+
+- **BREAKING (OAuth):** the in-process HTTP listener is now a shared ingress for OAuth callbacks and A2A push. Its env vars were renamed — `OAUTH_PUBLIC_URL` → `PUBLIC_URL`, `OAUTH_BIND_HOST` → `HTTP_BIND_HOST`, `OAUTH_BIND_PORT` → `HTTP_BIND_PORT` — with **no aliases**. (`OAUTH_SECRET_KEY` is unchanged.) Agents using OAuth must rename these in their environment. The startup validator fails fast with a clear message naming `PUBLIC_URL` when OAuth or push is configured but the var is missing.
 
 ## [0.8.1] - 2026-05-07
 
