@@ -47,6 +47,7 @@ class A2AResult:
     context_id: str | None
     task_id: str | None
     files: list[dict] = field(default_factory=list)  # {data: bytes, filename, mimeType}
+    message_id: str | None = None  # id of the status message (for push dedup)
 
 
 def build_auth_headers(auth: dict | None) -> dict:
@@ -143,18 +144,33 @@ class A2AClient:
         context_id: str | None,
         task_id: str | None = None,
         files: list[dict] | None = None,
+        push_config: dict | None = None,
     ) -> A2AResult:
         """Send `message` (+ optional `files`) on `context_id`/`task_id`; return an A2AResult.
 
         Pass `task_id` to continue an existing multi-turn Task (so the server keeps
         its per-task state); pass None to let the server create a fresh Task.
         `files` are {data: bytes, filename, mimeType} dicts sent as raw A2A parts.
+        `push_config` is {url, token}; when given, registers a push webhook inline
+        on this send so the server binds it to the (new) task.
         """
         from a2a.types.a2a_pb2 import SendMessageRequest  # noqa: PLC0415
 
-        request = SendMessageRequest(
-            message=self._build_message(message, context_id, task_id, files)
-        )
+        msg = self._build_message(message, context_id, task_id, files)
+        if push_config:
+            from a2a.types.a2a_pb2 import (  # noqa: PLC0415
+                SendMessageConfiguration,
+                TaskPushNotificationConfig,
+            )
+
+            cfg = SendMessageConfiguration(
+                task_push_notification_config=TaskPushNotificationConfig(
+                    url=push_config["url"], token=push_config["token"]
+                )
+            )
+            request = SendMessageRequest(message=msg, configuration=cfg)
+        else:
+            request = SendMessageRequest(message=msg)
         last = None
         async for resp in self._sdk_client.send_message(request):
             last = resp
@@ -230,8 +246,10 @@ class A2AClient:
             text = "\n".join(t for a in task.artifacts if (t := _parts_text(a.parts)))
             for a in task.artifacts:
                 files.extend(_parts_files(a.parts))
+        message_id = None
         if status.HasField("message"):
             files.extend(_parts_files(status.message.parts))
+            message_id = status.message.message_id or None
             if not text:
                 text = _parts_text(status.message.parts)
         return A2AResult(
@@ -240,6 +258,7 @@ class A2AClient:
             context_id=task.context_id or None,
             task_id=task.id or None,
             files=files,
+            message_id=message_id,
         )
 
     async def close(self) -> None:

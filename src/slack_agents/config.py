@@ -162,15 +162,18 @@ def _has_oauth_provider(tools_config: dict[str, dict]) -> bool:
     return any(t.get("type") == _OAUTH_PROVIDER_TYPE for t in tools_config.values())
 
 
+_PUBLIC_URL_LABEL = "PUBLIC_URL"
+
+
 def _validate_public_url(value: str | None) -> list[str]:
     if not value:
-        return ["OAUTH_PUBLIC_URL is not set."]
+        return [f"{_PUBLIC_URL_LABEL} is not set."]
     try:
         parsed = urlparse(value)
     except Exception:
-        return [f"OAUTH_PUBLIC_URL is not a valid URL: {value!r}."]
+        return [f"{_PUBLIC_URL_LABEL} is not a valid URL: {value!r}."]
     if not parsed.hostname:
-        return [f"OAUTH_PUBLIC_URL has no host: {value!r}."]
+        return [f"{_PUBLIC_URL_LABEL} has no host: {value!r}."]
     if parsed.scheme == "https":
         return []
     if parsed.scheme == "http":
@@ -178,9 +181,10 @@ def _validate_public_url(value: str | None) -> list[str]:
         if host in _LOOPBACK_HOSTS:
             return []
         return [
-            f"OAUTH_PUBLIC_URL must use https:// (or http:// with a loopback host); got {value!r}."
+            f"{_PUBLIC_URL_LABEL} must use https:// "
+            f"(or http:// with a loopback host); got {value!r}."
         ]
-    return [f"OAUTH_PUBLIC_URL must be http(s); got scheme {parsed.scheme!r}."]
+    return [f"{_PUBLIC_URL_LABEL} must be http(s); got scheme {parsed.scheme!r}."]
 
 
 def _validate_secret_key(value: str | None) -> list[str]:
@@ -201,24 +205,71 @@ def _validate_secret_key(value: str | None) -> list[str]:
     return []
 
 
-def validate_oauth_env(tools_config: dict[str, dict]) -> None:
-    """Raise SystemExit with a consolidated message if any mcp_http_oauth provider is
-    configured but the OAuth env vars are missing or malformed.
+# ---------------------------------------------------------------------------
+# In-process HTTP ingress (shared by OAuth callbacks and A2A push webhooks)
+# ---------------------------------------------------------------------------
 
-    No-op if no mcp_http_oauth provider is configured.
+_A2A_AGENT_TYPE = "slack_agents.a2a.agent"
+
+
+def resolve_public_url() -> str | None:
+    """Public URL of the in-process ingress, shared by OAuth and A2A push.
+
+    Returns None if `PUBLIC_URL` is not set.
     """
-    if not _has_oauth_provider(tools_config):
+    return os.environ.get("PUBLIC_URL")
+
+
+def resolve_bind_host() -> str:
+    return os.environ.get("HTTP_BIND_HOST") or "0.0.0.0"
+
+
+def resolve_bind_port() -> int:
+    return int(os.environ.get("HTTP_BIND_PORT") or "8080")
+
+
+def push_a2a_agent_names(tools_config: dict[str, dict]) -> list[str]:
+    """Config keys of a2a.agent providers with push notifications enabled."""
+    return sorted(
+        k
+        for k, v in tools_config.items()
+        if v.get("type") == _A2A_AGENT_TYPE and v.get("push_notifications")
+    )
+
+
+def ingress_needed(tools_config: dict[str, dict]) -> bool:
+    """True if the in-process HTTP listener must start (OAuth or A2A push)."""
+    return _has_oauth_provider(tools_config) or bool(push_a2a_agent_names(tools_config))
+
+
+def validate_ingress_env(tools_config: dict[str, dict]) -> None:
+    """Validate the HTTP-ingress env when OAuth or A2A push needs it.
+
+    The ingress public URL comes from `resolve_public_url()`; OAuth additionally
+    needs `OAUTH_SECRET_KEY`. No-op when neither feature is configured.
+    """
+    needs_oauth = _has_oauth_provider(tools_config)
+    push_names = push_a2a_agent_names(tools_config)
+    if not needs_oauth and not push_names:
         return
+
     problems: list[str] = []
-    problems.extend(_validate_public_url(os.environ.get("OAUTH_PUBLIC_URL")))
-    problems.extend(_validate_secret_key(os.environ.get("OAUTH_SECRET_KEY")))
+    problems.extend(_validate_public_url(resolve_public_url()))
+    if needs_oauth:
+        problems.extend(_validate_secret_key(os.environ.get("OAUTH_SECRET_KEY")))
     if not problems:
         return
-    names = sorted(k for k, v in tools_config.items() if v.get("type") == _OAUTH_PROVIDER_TYPE)
+
+    reasons: list[str] = []
+    if needs_oauth:
+        names = sorted(k for k, v in tools_config.items() if v.get("type") == _OAUTH_PROVIDER_TYPE)
+        reasons.append(f"OAuth-protected MCP servers ({', '.join(names)})")
+    if push_names:
+        reasons.append(f"push-enabled A2A agents ({', '.join(push_names)})")
     header = (
-        "Configuration error: this agent has OAuth-protected MCP servers "
-        f"({', '.join(names)}), but the required environment variables are "
-        "missing or invalid:\n"
+        "Configuration error: this agent has "
+        + " and ".join(reasons)
+        + ", but the required ingress environment variables are missing or invalid:\n"
     )
     body = "\n".join(f"  • {p}" for p in problems)
     footer = "\nAdd these to your .env file and restart."

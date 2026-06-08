@@ -867,48 +867,77 @@ class SlackAgent:
             deliver_async_result=self.deliver_async_result,
         )
 
-    async def _start_oauth_listener_if_needed(self) -> None:
-        """If any tool config is mcp_http_oauth, start the in-process OAuth listener
-        and stash the public URL on the FrameworkContext.
+    async def _start_ingress_if_needed(self) -> None:
+        """Start the shared in-process HTTP listener when OAuth or A2A push needs it,
+        register both feature's routes on one app/port, and stash the public URL.
         """
-        has_oauth = any(t.get("type") == _OAUTH_PROVIDER_TYPE for t in self.config.tools.values())
-        if not has_oauth:
-            return
-        from slack_agents.oauth.crypto import derive_subkeys
-        from slack_agents.oauth.server import start_listener
-        from slack_agents.oauth.state import NonceReplayCache
+        from aiohttp import web
 
-        root_key = base64.b64decode(os.environ["OAUTH_SECRET_KEY"], validate=True)
-        state_key, _ = derive_subkeys(root_key)
-        nonce_cache = NonceReplayCache()
-        runner, _site = await start_listener(
-            host=os.environ.get("OAUTH_BIND_HOST", "0.0.0.0"),
-            port=int(os.environ.get("OAUTH_BIND_PORT", "8080")),
-            state_key=state_key,
-            nonce_cache=nonce_cache,
-            pending_flows=self._framework_ctx.pending_flows,
+        from slack_agents.config import (
+            ingress_needed,
+            push_a2a_agent_names,
+            resolve_bind_host,
+            resolve_bind_port,
+            resolve_public_url,
         )
+
+        if not ingress_needed(self.config.tools):
+            return
+
+        has_oauth = any(t.get("type") == _OAUTH_PROVIDER_TYPE for t in self.config.tools.values())
+        if has_oauth:
+            from slack_agents.oauth.crypto import derive_subkeys
+            from slack_agents.oauth.server import build_app
+            from slack_agents.oauth.state import NonceReplayCache
+
+            state_key, _ = derive_subkeys(base64.b64decode(os.environ["OAUTH_SECRET_KEY"], True))
+            app = build_app(
+                state_key=state_key,
+                nonce_cache=NonceReplayCache(),
+                pending_flows=self._framework_ctx.pending_flows,
+            )
+        else:
+            app = web.Application()
+
+        push_names = push_a2a_agent_names(self.config.tools)
+        if push_names:
+            from slack_agents.a2a.push import add_push_route
+
+            add_push_route(app, self._framework_ctx)
+
+        host, port = resolve_bind_host(), resolve_bind_port()
+        runner = web.AppRunner(app)
+        await runner.setup()
+        await web.TCPSite(runner, host=host, port=port).start()
         self._oauth_runner = runner
-        self._framework_ctx._public_url = os.environ["OAUTH_PUBLIC_URL"].rstrip("/")
+        self._framework_ctx._public_url = resolve_public_url().rstrip("/")
         logger.info(
-            "oauth: callback URL = %s/oauth/callback",
+            "ingress: HTTP listener on %s:%s (public %s)",
+            host,
+            port,
             self._framework_ctx._public_url,
         )
-        oauth_count = sum(
-            1 for t in self.config.tools.values() if t.get("type") == _OAUTH_PROVIDER_TYPE
-        )
-        logger.info("oauth: %d OAuth-protected MCP server(s) configured", oauth_count)
+        if has_oauth:
+            logger.info(
+                "ingress: OAuth callback = %s/oauth/callback", self._framework_ctx._public_url
+            )
+        if push_names:
+            logger.info(
+                "ingress: A2A push webhook = %s/a2a/push (%s)",
+                self._framework_ctx._public_url,
+                ", ".join(push_names),
+            )
 
     async def start(self) -> None:
         """Start the agent in Socket Mode."""
         await self._init_storage()
         # Build framework context (needs storage + Slack client).
         self._framework_ctx = self._build_framework_context()
-        # Conditionally start the in-process OAuth callback listener.
-        # validate_oauth_env() is called earlier in main.py, before observability
+        # Conditionally start the in-process HTTP ingress (OAuth callbacks + A2A push).
+        # validate_ingress_env() is called earlier in main.py, before observability
         # spins up background threads — moving it here would let OTEL keep the
         # process alive after SystemExit.
-        await self._start_oauth_listener_if_needed()
+        await self._start_ingress_if_needed()
         try:
             await self._init_tools()
 

@@ -152,7 +152,7 @@ tools:
     allowed_functions: [".*"]
 ```
 
-This pulls in extra runtime requirements: `OAUTH_PUBLIC_URL`,
+This pulls in extra runtime requirements: `PUBLIC_URL`,
 `OAUTH_SECRET_KEY`, and an in-process HTTP listener for OAuth callbacks. Read
 the OAuth doc before configuring this in production.
 

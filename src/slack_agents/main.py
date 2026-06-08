@@ -21,7 +21,7 @@ def setup_environment() -> None:
 setup_environment()
 logger = logging.getLogger(__name__)
 
-from slack_agents.config import load_agent_config, validate_oauth_env  # noqa: E402
+from slack_agents.config import load_agent_config, validate_ingress_env  # noqa: E402
 from slack_agents.observability import initialize as init_observability  # noqa: E402
 
 
@@ -32,10 +32,10 @@ async def run(agent_dir_arg: str) -> None:
         sys.exit(1)
     config, system_prompt, agent_name = load_agent_config(agent_dir)
     logger.info("Loaded config for agent: %s", agent_name)
-    # Fail-fast on missing/malformed OAuth env vars BEFORE any heavy startup
-    # (observability, storage, etc.) — otherwise OTEL background threads
-    # keep the process alive and SystemExit appears to hang.
-    validate_oauth_env(config.tools)
+    # Fail-fast on missing/malformed ingress env vars (OAuth or A2A push) BEFORE
+    # any heavy startup (observability, storage, etc.) — otherwise OTEL background
+    # threads keep the process alive and SystemExit appears to hang.
+    validate_ingress_env(config.tools)
     if config.observability:
         init_observability(config.observability)
     llm_type = config.llm.get("type", "unknown")

@@ -35,10 +35,10 @@ single consolidated error message.
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `OAUTH_PUBLIC_URL` | yes | — | Externally reachable base URL of this agent process. Must be `https://`, or `http://` with a loopback host (`localhost`, `127.0.0.1`, `[::1]`) for local dev. |
+| `PUBLIC_URL` | yes | — | Externally reachable base URL of this agent process (shared with A2A push). Must be `https://`, or `http://` with a loopback host (`localhost`, `127.0.0.1`, `[::1]`) for local dev. |
 | `OAUTH_SECRET_KEY` | yes | — | Root key for HKDF; ≥32 bytes after base64 decode. Used to sign OAuth state tokens and encrypt refresh tokens at rest. |
-| `OAUTH_BIND_HOST` | no | `0.0.0.0` | Interface the in-process callback listener binds to. |
-| `OAUTH_BIND_PORT` | no | `8080` | TCP port for the callback listener. |
+| `HTTP_BIND_HOST` | no | `0.0.0.0` | Interface the in-process listener binds to (shared ingress). |
+| `HTTP_BIND_PORT` | no | `8080` | TCP port for the listener (shared ingress). |
 
 ### Generating `OAUTH_SECRET_KEY`
 
@@ -67,13 +67,13 @@ ngrok http 8080
 # → forwards https://abcd-1234.ngrok-free.app to localhost:8080
 
 # Terminal 2 — set env vars and run the agent:
-export OAUTH_PUBLIC_URL=https://abcd-1234.ngrok-free.app
+export PUBLIC_URL=https://abcd-1234.ngrok-free.app
 export OAUTH_SECRET_KEY=$(openssl rand -base64 32)
 slack-agents run agents/my-agent
 ```
 
 If you'd rather not use a tunnel, you can run with
-`OAUTH_PUBLIC_URL=http://localhost:8080` — the validator allows loopback
+`PUBLIC_URL=http://localhost:8080` — the validator allows loopback
 addresses over plain HTTP per RFC 8252.
 
 ## What a Slack user sees
@@ -190,7 +190,7 @@ plaintext (still in the private DB).
 
 ## Troubleshooting
 
-**"Configuration error: ... OAUTH_PUBLIC_URL is not set"** — set the env vars
+**"Configuration error: ... PUBLIC_URL is not set"** — set the env vars
 listed in the message and restart.
 
 **"Authentication timed out"** — the user didn't click the link within

@@ -254,6 +254,54 @@ A2A_TEST_URL=http://127.0.0.1:9999 pytest tests/a2a/test_integration.py -v
 The assertions are agent-agnostic — the same test works against any conformant
 A2A agent.
 
+## Push notifications
+
+When a remote agent supports push (`capabilities.pushNotifications`), the
+framework can register a **webhook** so the agent delivers task updates —
+status messages and file artifacts — to the Slack thread out-of-band, including
+reports that arrive *after* a synchronous reply. This is the unified,
+**push-preferred** async path; the background poller remains the fallback for
+agents that don't support push.
+
+**Enable it** with `push_notifications: true` on the `a2a.agent` config (opt-in,
+because push requires a publicly reachable URL):
+
+```yaml
+tools:
+  mya2a:
+    type: slack_agents.a2a.agent
+    url: "https://remote-agent.example.com"
+    push_notifications: true
+    allowed_functions: [".*"]
+```
+
+**Ingress.** Push needs the in-process HTTP listener (shared with OAuth) and a
+public URL the agent can POST to. Configure:
+
+| Env | Default | Purpose |
+|-----|---------|---------|
+| `PUBLIC_URL` | — (required) | Public base URL of the ingress; the webhook is `<PUBLIC_URL>/a2a/push`. |
+| `HTTP_BIND_HOST` | `0.0.0.0` | Listener bind host. |
+| `HTTP_BIND_PORT` | `8080` | Listener bind port. |
+
+This is the one A2A feature that needs **inbound** HTTP — unlike the polling
+path, which is outbound-only. For local testing the URL can be a loopback
+(`http://127.0.0.1:8080`) reachable by an agent on the same host.
+
+**How it works.** On the first send the framework registers the webhook inline
+(`SendMessageConfiguration.task_push_notification_config`) with a random
+per-task token, and persists a `taskId → thread` record. Incoming POSTs are
+validated against the token, correlated by `taskId`, **de-duplicated** by
+message/artifact id (the server re-pushes the immediate reply, which we already
+delivered synchronously), and any genuinely-new text/files are posted/uploaded
+to the thread.
+
+**Security & limits.** We validate the shared-secret token and only act on tasks
+we registered. The protocol's signing (JWS) and SSRF-allowlist are server-side
+concerns we don't yet rely on. There are no delivery retries (the agent sends a
+single POST), and a *server* restart drops its own registration — so a
+previously-registered task simply stops pushing.
+
 ## Current limitations
 
 The following are not yet implemented. They are planned for future releases.
@@ -267,9 +315,6 @@ The following are not yet implemented. They are planned for future releases.
 - **Static auth only.** Auth credentials are fixed at startup from environment
   variables. Per-Slack-user OAuth (each user authenticates separately to the
   remote agent) is not yet supported.
-- **No push notifications.** The framework polls; it does not register a push
-  webhook with the remote agent. This is correct and complete — polling is
-  sufficient — but a push path would reduce latency for very long tasks.
 - **No A2A server mode.** This framework cannot be addressed as an A2A agent
   by other agents. It is a client only.
 

@@ -26,7 +26,7 @@ class FakeClient:
     async def resolve_card(self):
         return {"name": "Helper", "description": "d", "skills_text": ""}
 
-    async def send(self, message, context_id, task_id=None, files=None):
+    async def send(self, message, context_id, task_id=None, files=None, push_config=None):
         return self.result
 
     async def close(self):

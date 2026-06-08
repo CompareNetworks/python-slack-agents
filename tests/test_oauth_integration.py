@@ -97,7 +97,7 @@ class TestEndToEndAuth:
         # Set env so the Provider derives keys deterministically per test.
         root = base64.b64encode(b"\x33" * 32).decode()
         monkeypatch.setenv("OAUTH_SECRET_KEY", root)
-        monkeypatch.setenv("OAUTH_PUBLIC_URL", "http://127.0.0.1:0")  # filled below
+        monkeypatch.setenv("PUBLIC_URL", "http://127.0.0.1:0")  # filled below
 
         storage = SqliteProvider(path=":memory:")
         await storage.initialize()

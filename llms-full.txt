@@ -433,7 +433,7 @@ tools:
     allowed_functions: [".*"]
 ```
 
-This pulls in extra runtime requirements: `OAUTH_PUBLIC_URL`,
+This pulls in extra runtime requirements: `PUBLIC_URL`,
 `OAUTH_SECRET_KEY`, and an in-process HTTP listener for OAuth callbacks. Read
 the OAuth doc before configuring this in production.
 
@@ -1396,10 +1396,10 @@ single consolidated error message.
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `OAUTH_PUBLIC_URL` | yes | — | Externally reachable base URL of this agent process. Must be `https://`, or `http://` with a loopback host (`localhost`, `127.0.0.1`, `[::1]`) for local dev. |
+| `PUBLIC_URL` | yes | — | Externally reachable base URL of this agent process (shared with A2A push). Must be `https://`, or `http://` with a loopback host (`localhost`, `127.0.0.1`, `[::1]`) for local dev. |
 | `OAUTH_SECRET_KEY` | yes | — | Root key for HKDF; ≥32 bytes after base64 decode. Used to sign OAuth state tokens and encrypt refresh tokens at rest. |
-| `OAUTH_BIND_HOST` | no | `0.0.0.0` | Interface the in-process callback listener binds to. |
-| `OAUTH_BIND_PORT` | no | `8080` | TCP port for the callback listener. |
+| `HTTP_BIND_HOST` | no | `0.0.0.0` | Interface the in-process listener binds to (shared ingress). |
+| `HTTP_BIND_PORT` | no | `8080` | TCP port for the listener (shared ingress). |
 
 ### Generating `OAUTH_SECRET_KEY`
 
@@ -1428,13 +1428,13 @@ ngrok http 8080
 # → forwards https://abcd-1234.ngrok-free.app to localhost:8080
 
 # Terminal 2 — set env vars and run the agent:
-export OAUTH_PUBLIC_URL=https://abcd-1234.ngrok-free.app
+export PUBLIC_URL=https://abcd-1234.ngrok-free.app
 export OAUTH_SECRET_KEY=$(openssl rand -base64 32)
 slack-agents run agents/my-agent
 ```
 
 If you'd rather not use a tunnel, you can run with
-`OAUTH_PUBLIC_URL=http://localhost:8080` — the validator allows loopback
+`PUBLIC_URL=http://localhost:8080` — the validator allows loopback
 addresses over plain HTTP per RFC 8252.
 
 ## What a Slack user sees
@@ -1551,7 +1551,7 @@ plaintext (still in the private DB).
 
 ## Troubleshooting
 
-**"Configuration error: ... OAUTH_PUBLIC_URL is not set"** — set the env vars
+**"Configuration error: ... PUBLIC_URL is not set"** — set the env vars
 listed in the message and restart.
 
 **"Authentication timed out"** — the user didn't click the link within
@@ -1910,6 +1910,54 @@ A2A_TEST_URL=http://127.0.0.1:9999 pytest tests/a2a/test_integration.py -v
 The assertions are agent-agnostic — the same test works against any conformant
 A2A agent.
 
+## Push notifications
+
+When a remote agent supports push (`capabilities.pushNotifications`), the
+framework can register a **webhook** so the agent delivers task updates —
+status messages and file artifacts — to the Slack thread out-of-band, including
+reports that arrive *after* a synchronous reply. This is the unified,
+**push-preferred** async path; the background poller remains the fallback for
+agents that don't support push.
+
+**Enable it** with `push_notifications: true` on the `a2a.agent` config (opt-in,
+because push requires a publicly reachable URL):
+
+```yaml
+tools:
+  mya2a:
+    type: slack_agents.a2a.agent
+    url: "https://remote-agent.example.com"
+    push_notifications: true
+    allowed_functions: [".*"]
+```
+
+**Ingress.** Push needs the in-process HTTP listener (shared with OAuth) and a
+public URL the agent can POST to. Configure:
+
+| Env | Default | Purpose |
+|-----|---------|---------|
+| `PUBLIC_URL` | — (required) | Public base URL of the ingress; the webhook is `<PUBLIC_URL>/a2a/push`. |
+| `HTTP_BIND_HOST` | `0.0.0.0` | Listener bind host. |
+| `HTTP_BIND_PORT` | `8080` | Listener bind port. |
+
+This is the one A2A feature that needs **inbound** HTTP — unlike the polling
+path, which is outbound-only. For local testing the URL can be a loopback
+(`http://127.0.0.1:8080`) reachable by an agent on the same host.
+
+**How it works.** On the first send the framework registers the webhook inline
+(`SendMessageConfiguration.task_push_notification_config`) with a random
+per-task token, and persists a `taskId → thread` record. Incoming POSTs are
+validated against the token, correlated by `taskId`, **de-duplicated** by
+message/artifact id (the server re-pushes the immediate reply, which we already
+delivered synchronously), and any genuinely-new text/files are posted/uploaded
+to the thread.
+
+**Security & limits.** We validate the shared-secret token and only act on tasks
+we registered. The protocol's signing (JWS) and SSRF-allowlist are server-side
+concerns we don't yet rely on. There are no delivery retries (the agent sends a
+single POST), and a *server* restart drops its own registration — so a
+previously-registered task simply stops pushing.
+
 ## Current limitations
 
 The following are not yet implemented. They are planned for future releases.
@@ -1923,9 +1971,6 @@ The following are not yet implemented. They are planned for future releases.
 - **Static auth only.** Auth credentials are fixed at startup from environment
   variables. Per-Slack-user OAuth (each user authenticates separately to the
   remote agent) is not yet supported.
-- **No push notifications.** The framework polls; it does not register a push
-  webhook with the remote agent. This is correct and complete — polling is
-  sufficient — but a push path would reduce latency for very long tasks.
 - **No A2A server mode.** This framework cannot be addressed as an A2A agent
   by other agents. It is a client only.
 

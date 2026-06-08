@@ -315,7 +315,7 @@ class Provider(BaseToolProvider):
         root = self._load_root_key()
         self._state_key, self._token_key = derive_subkeys(root)
         self._public_url = (
-            getattr(framework_ctx, "_public_url", None) or os.environ.get("OAUTH_PUBLIC_URL", "")
+            getattr(framework_ctx, "_public_url", None) or os.environ.get("PUBLIC_URL", "")
         ).rstrip("/")
         self._redirect_uri = f"{self._public_url}/oauth/callback"
         # Tools are discovered eagerly via ensure_authenticated() when the user first
@@ -731,7 +731,7 @@ class Provider(BaseToolProvider):
                     tool=tool_name,
                     recovery=RECOVERY_RETRY,
                     message=(
-                        "The agent's OAUTH_PUBLIC_URL doesn't match the "
+                        "The agent's PUBLIC_URL doesn't match the "
                         "redirect_uri registered with the OAuth client at "
                         "the IdP. The cached client registration has been "
                         "cleared — the next call will register a fresh "

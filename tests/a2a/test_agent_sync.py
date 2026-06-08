@@ -22,7 +22,7 @@ class FakeClient:
     async def resolve_card(self):
         return {"name": "Helper", "description": "d", "skills_text": ""}
 
-    async def send(self, message, context_id, task_id=None, files=None):
+    async def send(self, message, context_id, task_id=None, files=None, push_config=None):
         self.sent.append((message, context_id, task_id))
         return self.result
 
@@ -113,7 +113,7 @@ async def test_forwards_uploads_and_returns_received_files(monkeypatch, store):
         async def resolve_card(self):
             return {"name": "Helper", "description": "d", "skills_text": ""}
 
-        async def send(self, message, context_id, task_id=None, files=None):
+        async def send(self, message, context_id, task_id=None, files=None, push_config=None):
             captured["files"] = files
             return A2AResult("completed", "done", "c", "t", files=[out_file])
 
