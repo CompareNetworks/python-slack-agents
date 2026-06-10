@@ -139,7 +139,7 @@ class TestEndToEndAuth:
             # Drive the auth flow: redirect_handler will register a pending future
             # keyed by the SDK state. We simulate the user clicking by calling the
             # Provider listener's /oauth/callback directly with that state.
-            handle = provider._oauth_handle_for_user("U1", "C1", None)
+            handle = provider._oauth.make_handle("U1", "C1", None)
             # Redirect handler with a synthetic authorize_url carrying a state.
             sdk_state = secrets.token_hex(16)
             await handle.redirect_handler(

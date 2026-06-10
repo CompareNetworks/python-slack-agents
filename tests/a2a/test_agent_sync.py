@@ -41,7 +41,7 @@ async def store():
 async def _provider(monkeypatch, result):
     fake = FakeClient(result)
     monkeypatch.setattr(a2a_agent, "A2AClient", lambda **kw: fake)
-    p = a2a_agent.Provider(url="http://x", allowed_functions=[".*"], name="helper")
+    p = a2a_agent.Provider(url="http://x", server_id="helper")
     await p.initialize()
     return p, fake
 
@@ -129,12 +129,20 @@ async def test_forwards_uploads_and_returns_received_files(monkeypatch, store):
         deliver_async_result = None
         pending_uploads = {"T1": [{"data": b"abc", "filename": "in.csv", "mimeType": "text/csv"}]}
 
-    p = a2a_agent.Provider(
-        url="http://x", allowed_functions=[".*"], name="helper", framework_ctx=Ctx()
-    )
+    p = a2a_agent.Provider(url="http://x", server_id="helper", framework_ctx=Ctx())
     await p.initialize()
     res = await p.call_tool("helper", {"message": "go"}, UCC, store)
     # the user's attachment was forwarded to the agent
     assert captured["files"] == [{"data": b"abc", "filename": "in.csv", "mimeType": "text/csv"}]
     # the agent's returned file is surfaced on the ToolResult (framework uploads it)
     assert res["files"] == [out_file]
+
+
+def test_a2a_has_no_allowed_functions_param():
+    """A2A exposes a single tool, so the provider takes no `allowed_functions`;
+    the base class still exposes the one tool via an internal '.*' pattern."""
+    import inspect
+
+    assert "allowed_functions" not in inspect.signature(a2a_agent.Provider.__init__).parameters
+    p = a2a_agent.Provider(url="http://x", server_id="a")
+    assert p._allowed_patterns[0].fullmatch("any-tool-name")

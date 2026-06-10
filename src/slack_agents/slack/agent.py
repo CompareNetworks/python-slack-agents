@@ -26,6 +26,9 @@ from slack_agents.storage.base import BaseStorageProvider
 from slack_agents.tools.base import BaseFileImporterProvider, BaseToolProvider
 
 _OAUTH_PROVIDER_TYPE = "slack_agents.tools.mcp_http_oauth"
+_A2A_AGENT_TYPE = "slack_agents.a2a.agent"
+# Provider types that take the config key as `server_id` (their identity/namespace).
+_SERVER_ID_PROVIDER_TYPES = (_OAUTH_PROVIDER_TYPE, _A2A_AGENT_TYPE)
 
 logger = logging.getLogger(__name__)
 
@@ -748,8 +751,14 @@ class SlackAgent:
             try:
                 cfg = dict(tool_config)
                 type_path = cfg.pop("type")
-                if type_path == _OAUTH_PROVIDER_TYPE:
+                if type_path in _SERVER_ID_PROVIDER_TYPES:
                     cfg.setdefault("server_id", name)
+                if type_path == _A2A_AGENT_TYPE and cfg.pop("allowed_functions", None) is not None:
+                    logger.warning(
+                        "a2a.agent %r: 'allowed_functions' is ignored (an A2A agent exposes a "
+                        "single tool) — you can remove it from config.",
+                        name,
+                    )
                 provider = load_plugin(type_path, framework_ctx=self._framework_ctx, **cfg)
                 named_providers.append((name, provider))
             except Exception:
@@ -875,6 +884,7 @@ class SlackAgent:
 
         from slack_agents.config import (
             ingress_needed,
+            oauth_needed,
             push_a2a_agent_names,
             resolve_bind_host,
             resolve_bind_port,
@@ -884,13 +894,15 @@ class SlackAgent:
         if not ingress_needed(self.config.tools):
             return
 
-        has_oauth = any(t.get("type") == _OAUTH_PROVIDER_TYPE for t in self.config.tools.values())
+        has_oauth = oauth_needed(self.config.tools)
         if has_oauth:
             from slack_agents.oauth.crypto import derive_subkeys
             from slack_agents.oauth.server import build_app
             from slack_agents.oauth.state import NonceReplayCache
 
-            state_key, _ = derive_subkeys(base64.b64decode(os.environ["OAUTH_SECRET_KEY"], True))
+            state_key, _ = derive_subkeys(
+                base64.b64decode(os.environ["OAUTH_SECRET_KEY"], validate=True)
+            )
             app = build_app(
                 state_key=state_key,
                 nonce_cache=NonceReplayCache(),

@@ -52,13 +52,12 @@ storage:
   path: ":memory:"
 
 tools:
-  # The remote A2A agent, exposed to the LLM as one free-text tool named "mya2a".
+  # The remote A2A agent, exposed to the LLM as one free-text tool named after this
+  # key ("mya2a"). Rename the key to rename the tool.
   mya2a:
     type: slack_agents.a2a.agent
-    name: "mya2a"
     url: "http://127.0.0.1:9999"
     auth: {}
-    allowed_functions: [".*"]
 
   # Lets the framework ACCEPT Slack file uploads; the a2a tool then forwards the
   # raw bytes to the agent. (With Option A the LLM also sees the extracted text.)

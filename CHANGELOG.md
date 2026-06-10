@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-06-09
+
+### Added
+
+- **A2A per-user OAuth** (`auth: { type: oauth2 }`). Remote A2A agents can now require per-Slack-user OAuth 2.1: each user authenticates separately and the agent calls on their behalf. Auth metadata is discovered from the Agent Card's `securitySchemes.oauth2` (no `client_id`/`scopes` in YAML); the flow uses Dynamic Client Registration + authorization-code + PKCE + refresh, the same ephemeral "Authenticate" button, the shared `/oauth/*` ingress, and the same `PUBLIC_URL` / `OAUTH_SECRET_KEY` env contract as `mcp_http_oauth`. Long-running tasks polled in the background use the user's stored token non-interactively (silent refresh; a "session expired — please re-ask" notice if it can't be refreshed). When push is registered for a task, the token-dependent poller is skipped (push delivers regardless of later token state). See `docs/a2a.md`.
+- **A2A API-key auth** — `auth: { type: apiKey, name, value }` (sends the raw value as the named header, matching the Agent Card's `apiKey` scheme), alongside the existing `bearer` / `header` / `none` forms.
+- **OAuth user-info logging** (MCP and A2A). On first authentication the user's OIDC identity (`sub` / `preferred_username` / `name` / `email`) is fetched from the userinfo endpoint and logged. The `profile` scope is now requested and registered alongside `openid` / `offline_access`.
+
+### Changed
+
+- The provider-agnostic OAuth flow was extracted from `tools/mcp_http_oauth.py` into the `oauth/` package (`scopes`, `errors`, `discovery`, `flow`), parameterized by a discovery strategy — RFC 9728 PRM for MCP, Agent Card for A2A. No behavior change for MCP-OAuth.
+- DCR client registration now requests the OIDC baseline (`openid`, `offline_access`, `profile`) explicitly, so strict authorization-server registration policies (e.g. Keycloak's "Allowed Client Scopes") grant the client those scopes rather than rejecting the later authorize with `invalid_scope`.
+- **BREAKING (A2A):** removed the `name` field from `slack_agents.a2a.agent`. The single tool is now named after the provider's key under `tools:` (slugified to satisfy LLM tool-name rules); rename the key to rename the tool. Keys are unique within `tools:`, so two agents never collide.
+- **BREAKING (A2A):** removed `allowed_functions` from `slack_agents.a2a.agent` — an A2A agent exposes exactly one opaque tool, so there was nothing to filter. A stray `allowed_functions` on an A2A config is ignored at load with a warning.
+
+### Fixed
+
+- The in-process OAuth ingress crashed at startup with `TypeError: argument should be a bytes-like object … not 'bool'` whenever `OAUTH_SECRET_KEY` was set — `base64.b64decode(key, True)` passed `True` as the positional `altchars` argument instead of the keyword `validate=`. This was a latent bug in the shared ingress that affected MCP-OAuth and A2A-OAuth agents alike; it had no test coverage and is now exercised by `tests/test_ingress_startup.py`.
+- A2A `call_tool` now maps OAuth-specific failures to actionable results — a user-level authorization denial becomes a permission-denied error naming the missing scope, and an IdP `redirect_uri` rejection clears the stale client registration so the next attempt self-heals — instead of a generic "contact support".
+- The per-user A2A httpx client is closed if Agent Card resolution fails after construction, avoiding a connection-pool leak on the background poller's out-of-band re-auth path.
+
 ## [0.9.0] - 2026-06-07
 
 ### Added

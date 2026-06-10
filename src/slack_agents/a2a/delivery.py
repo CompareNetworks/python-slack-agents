@@ -20,9 +20,11 @@ class AsyncTaskManager:
         deliver,
         poll_interval: float = 5,
         max_lifetime: float = 3600,
+        client_factory=None,
     ):
         self._ns = f"a2a:inflight:{server_key}"
         self._client = client
+        self._client_factory = client_factory
         self._storage = storage
         # ASYNC callable(**{channel_id, thread_id, user_id, text, is_error})
         self._deliver = deliver
@@ -49,9 +51,14 @@ class AsyncTaskManager:
     async def _run(self, record: dict) -> None:
         tid = record["task_id"]
         elapsed = 0.0
+        client = self._client
+        owns_client = False
         try:
+            if client is None and self._client_factory is not None:
+                client = await self._client_factory(record)
+                owns_client = True
             while True:
-                r = await self._client.get_task(tid)
+                r = await client.get_task(tid)
                 bucket = classify(r.state)
                 if bucket != "non_terminal":
                     is_error = r.state in ("failed", "canceled", "rejected")
@@ -81,9 +88,34 @@ class AsyncTaskManager:
                 elapsed += self._poll_interval
         except asyncio.CancelledError:
             raise
-        except Exception:
-            logger.exception("A2A %s: poller for task %s crashed", self._ns, tid)
+        except Exception as e:
+            from slack_agents.oauth.errors import (  # noqa: PLC0415
+                ReauthRequired,
+                flatten_exceptions,
+            )
+
+            if any(isinstance(x, ReauthRequired) for x in flatten_exceptions(e)):
+                logger.info(
+                    "A2A %s: task %s needs re-auth; delivering session-expired", self._ns, tid
+                )
+                await self._deliver(
+                    channel_id=record["channel_id"],
+                    thread_id=record["thread_id"],
+                    user_id=record["user_id"],
+                    text=(
+                        "Your session for this task has expired, so I couldn't finish it. "
+                        "Please ask again and re-authenticate when prompted."
+                    ),
+                    is_error=True,
+                )
+            else:
+                logger.exception("A2A %s: poller for task %s crashed", self._ns, tid)
         finally:
+            if owns_client and client is not None:
+                try:
+                    await client.close()
+                except Exception:
+                    logger.debug("A2A %s: per-user client close failed", self._ns, exc_info=True)
             await self._storage.delete(self._ns, tid)
             self._tasks.pop(tid, None)
 

@@ -59,6 +59,8 @@ def build_auth_headers(auth: dict | None) -> dict:
         return {"Authorization": f"Bearer {auth['token']}"}
     if t == "header":
         return {auth["name"]: auth["value"]}
+    if t == "apiKey":
+        return {auth["name"]: auth["value"]}
     raise ValueError(f"Unknown a2a auth type: {t!r}")
 
 
@@ -101,10 +103,11 @@ def _parts_files(parts) -> list[dict]:
 class A2AClient:
     """Stable interface used by the rest of the a2a package."""
 
-    def __init__(self, url: str, auth: dict | None = None, timeout: float = 300):
+    def __init__(self, url: str, auth: dict | None = None, timeout: float = 300, httpx_client=None):
         self._url = url.rstrip("/")
         self._headers = build_auth_headers(auth)
         self._timeout = timeout
+        self._injected_httpx = httpx_client
         self._httpx: httpx.AsyncClient | None = None
         self._card = None
         self._sdk_client = None
@@ -113,7 +116,9 @@ class A2AClient:
         """Fetch the Agent Card and return {name, description, skills_text}."""
         from a2a.client import A2ACardResolver  # noqa: PLC0415
 
-        self._httpx = httpx.AsyncClient(headers=self._headers, timeout=self._timeout)
+        self._httpx = self._injected_httpx or httpx.AsyncClient(
+            headers=self._headers, timeout=self._timeout
+        )
         resolver = A2ACardResolver(httpx_client=self._httpx, base_url=self._url)
         self._card = await resolver.get_agent_card()
         self._sdk_client = await self._make_client(self._card)
@@ -261,6 +266,11 @@ class A2AClient:
             message_id=message_id,
         )
 
+    @property
+    def card(self):
+        """The parsed a2a-sdk AgentCard object (available after resolve_card())."""
+        return self._card
+
     async def close(self) -> None:
         if self._sdk_client is not None:
             try:
@@ -268,9 +278,42 @@ class A2AClient:
             except Exception:
                 logger.debug("A2A client close failed", exc_info=True)
             self._sdk_client = None
-        if self._httpx is not None:
+        if self._httpx is not None and self._injected_httpx is None:
             try:
                 await self._httpx.aclose()
             except Exception:
                 logger.debug("A2A httpx close failed", exc_info=True)
             self._httpx = None
+
+
+def extract_card_oauth(card) -> dict | None:
+    """Extract {authorization_url, token_url, scopes, metadata_url, required_scopes}
+    from a parsed a2a-sdk AgentCard, or None if it advertises no oauth2
+    authorization_code scheme.
+    """
+    schemes = getattr(card, "security_schemes", {}) or {}
+    oauth_scheme = None
+    oauth_key = None
+    for key, scheme in schemes.items():
+        if scheme.HasField("oauth2_security_scheme"):
+            oauth_scheme = scheme.oauth2_security_scheme
+            oauth_key = key
+            break
+    if oauth_scheme is None:
+        return None
+    flows = oauth_scheme.flows
+    if not flows.HasField("authorization_code"):
+        return None
+    ac = flows.authorization_code
+    required: list[str] = []
+    for req in getattr(card, "security_requirements", []) or []:
+        sl = req.schemes.get(oauth_key)
+        if sl is not None:
+            required.extend(sl.list)
+    return {
+        "authorization_url": ac.authorization_url,
+        "token_url": ac.token_url,
+        "scopes": list(ac.scopes.keys()),
+        "metadata_url": oauth_scheme.oauth2_metadata_url or "",
+        "required_scopes": required,
+    }

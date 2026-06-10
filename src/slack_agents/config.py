@@ -237,9 +237,23 @@ def push_a2a_agent_names(tools_config: dict[str, dict]) -> list[str]:
     )
 
 
+def oauth_a2a_agent_names(tools_config: dict[str, dict]) -> list[str]:
+    """Config keys of a2a.agent providers configured with per-user OAuth."""
+    return sorted(
+        k
+        for k, v in tools_config.items()
+        if v.get("type") == _A2A_AGENT_TYPE and (v.get("auth") or {}).get("type") == "oauth2"
+    )
+
+
+def oauth_needed(tools_config: dict[str, dict]) -> bool:
+    """True if any provider needs the OAuth callback routes (MCP oauth or A2A oauth)."""
+    return _has_oauth_provider(tools_config) or bool(oauth_a2a_agent_names(tools_config))
+
+
 def ingress_needed(tools_config: dict[str, dict]) -> bool:
     """True if the in-process HTTP listener must start (OAuth or A2A push)."""
-    return _has_oauth_provider(tools_config) or bool(push_a2a_agent_names(tools_config))
+    return oauth_needed(tools_config) or bool(push_a2a_agent_names(tools_config))
 
 
 def validate_ingress_env(tools_config: dict[str, dict]) -> None:
@@ -248,7 +262,7 @@ def validate_ingress_env(tools_config: dict[str, dict]) -> None:
     The ingress public URL comes from `resolve_public_url()`; OAuth additionally
     needs `OAUTH_SECRET_KEY`. No-op when neither feature is configured.
     """
-    needs_oauth = _has_oauth_provider(tools_config)
+    needs_oauth = oauth_needed(tools_config)
     push_names = push_a2a_agent_names(tools_config)
     if not needs_oauth and not push_names:
         return
@@ -261,9 +275,12 @@ def validate_ingress_env(tools_config: dict[str, dict]) -> None:
         return
 
     reasons: list[str] = []
-    if needs_oauth:
+    if _has_oauth_provider(tools_config):
         names = sorted(k for k, v in tools_config.items() if v.get("type") == _OAUTH_PROVIDER_TYPE)
         reasons.append(f"OAuth-protected MCP servers ({', '.join(names)})")
+    a2a_oauth_names = oauth_a2a_agent_names(tools_config)
+    if a2a_oauth_names:
+        reasons.append(f"OAuth-protected A2A agents ({', '.join(a2a_oauth_names)})")
     if push_names:
         reasons.append(f"push-enabled A2A agents ({', '.join(push_names)})")
     header = (

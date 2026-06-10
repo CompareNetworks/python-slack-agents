@@ -57,7 +57,7 @@ class TestAuthPromptOnMissingToken:
             server_id="my-mcp",
         )
         # Build a per-user OAuth handle (the unit under test).
-        handle = p._oauth_handle_for_user("U1", "C1", "1.2")
+        handle = p._oauth.make_handle("U1", "C1", "1.2")
         await handle.redirect_handler(
             "https://idp.example.com/authorize?state=SDK_STATE_123&client_id=x"
         )
@@ -79,7 +79,7 @@ class TestCallbackHandler:
             server_id="my-mcp",
             auth_timeout=2,
         )
-        handle = p._oauth_handle_for_user("U1", "C1", None)
+        handle = p._oauth.make_handle("U1", "C1", None)
         await handle.redirect_handler("https://idp.example.com/authorize?state=ST_OK&client_id=x")
 
         # Resolve from another task.
@@ -103,7 +103,7 @@ class TestCallbackHandler:
             server_id="my-mcp",
             auth_timeout=1,
         )
-        handle = p._oauth_handle_for_user("U1", "C1", None)
+        handle = p._oauth.make_handle("U1", "C1", None)
         await handle.redirect_handler("https://idp.example.com/authorize?state=ST_LATE&client_id=x")
         with pytest.raises(asyncio.TimeoutError):
             await handle.callback_handler()
@@ -113,7 +113,7 @@ class TestCallbackHandler:
         raise UserAuthorizationDenied so the caller can produce a friendly
         "your account doesn't have permission" message instead of a system error.
         """
-        from slack_agents.tools.mcp_http_oauth import UserAuthorizationDenied
+        from slack_agents.oauth.errors import UserAuthorizationDenied
 
         p = McpHttpOAuthProvider(
             url="https://srv.example.com/mcp",
@@ -122,7 +122,7 @@ class TestCallbackHandler:
             server_id="my-mcp",
             auth_timeout=2,
         )
-        handle = p._oauth_handle_for_user("U1", "C1", None)
+        handle = p._oauth.make_handle("U1", "C1", None)
         await handle.redirect_handler("https://idp.example.com/authorize?state=ST_DENY&client_id=x")
         framework_ctx.pending_flows.resolve(
             "ST_DENY",
@@ -151,7 +151,7 @@ class TestCallbackHandler:
             server_id="my-mcp",
             auth_timeout=2,
         )
-        handle = p._oauth_handle_for_user("U1", "C1", None)
+        handle = p._oauth.make_handle("U1", "C1", None)
         await handle.redirect_handler(
             "https://idp.example.com/authorize?state=ST_BROKEN&client_id=x"
         )
@@ -265,17 +265,17 @@ class TestScopeMergeHook:
     granted scopes + whatever the server signaled."""
 
     async def test_parse_and_replace_helpers(self):
-        from slack_agents.tools.mcp_http_oauth import (
-            _parse_www_auth_scope,
-            _replace_www_auth_scope,
+        from slack_agents.oauth.scopes import (
+            parse_www_auth_scope,
+            replace_www_auth_scope,
         )
 
         h = (
             'Bearer resource_metadata="https://srv/.well-known/x", '
             'error="insufficient_scope", scope="mcp:test:write"'
         )
-        assert _parse_www_auth_scope(h) == "mcp:test:write"
-        h2 = _replace_www_auth_scope(h, "openid offline_access mcp:test:read mcp:test:write")
+        assert parse_www_auth_scope(h) == "mcp:test:write"
+        h2 = replace_www_auth_scope(h, "openid offline_access mcp:test:read mcp:test:write")
         assert 'scope="openid offline_access mcp:test:read mcp:test:write"' in h2
         # Other params preserved
         assert 'resource_metadata="https://srv/.well-known/x"' in h2
@@ -328,7 +328,7 @@ class TestScopeMergeHook:
         response.url = "https://srv.example.com/mcp"
         response.headers = {"WWW-Authenticate": original_header}
 
-        hook = p._make_auth_response_hook("U1")
+        hook = p._oauth.auth_response_hook("U1")
         await hook(response)
 
         new_header = response.headers["WWW-Authenticate"]
@@ -341,6 +341,7 @@ class TestScopeMergeHook:
         assert scopes == {
             "openid",
             "offline_access",
+            "profile",
             "mcp:test:read",
             "mcp:test:write",
         }
@@ -360,7 +361,7 @@ class TestScopeMergeHook:
         response.status_code = 401
         response.url = "https://srv.example.com/mcp"
         response.headers = {"WWW-Authenticate": original}
-        hook = p._make_auth_response_hook("U1")
+        hook = p._oauth.auth_response_hook("U1")
         await hook(response)
         assert response.headers["WWW-Authenticate"] == original
 
@@ -377,7 +378,7 @@ class TestScopeMergeHook:
         response.status_code = 200
         response.url = "https://srv.example.com/mcp"
         response.headers = {"WWW-Authenticate": 'Bearer scope="anything"'}
-        hook = p._make_auth_response_hook("U1")
+        hook = p._oauth.auth_response_hook("U1")
         await hook(response)
         # Header unchanged.
         assert response.headers["WWW-Authenticate"] == 'Bearer scope="anything"'
@@ -476,19 +477,19 @@ class TestRedirectUriMismatchDetection:
     next call."""
 
     def test_recognises_keycloak_invalid_parameter(self):
-        from slack_agents.tools.mcp_http_oauth import _is_redirect_uri_mismatch
+        from slack_agents.oauth.errors import is_redirect_uri_mismatch
 
         exc = Exception("Invalid parameter: redirect_uri")
-        assert _is_redirect_uri_mismatch(exc) is True
+        assert is_redirect_uri_mismatch(exc) is True
 
     def test_recognises_redirect_uri_mismatch_phrase(self):
-        from slack_agents.tools.mcp_http_oauth import _is_redirect_uri_mismatch
+        from slack_agents.oauth.errors import is_redirect_uri_mismatch
 
         exc = Exception("error: redirect_uri_mismatch")
-        assert _is_redirect_uri_mismatch(exc) is True
+        assert is_redirect_uri_mismatch(exc) is True
 
     def test_recognises_inside_exception_chain(self):
-        from slack_agents.tools.mcp_http_oauth import _is_redirect_uri_mismatch
+        from slack_agents.oauth.errors import is_redirect_uri_mismatch
 
         try:
             try:
@@ -496,14 +497,14 @@ class TestRedirectUriMismatchDetection:
             except ValueError as inner:
                 raise RuntimeError("oauth flow failed") from inner
         except RuntimeError as outer:
-            assert _is_redirect_uri_mismatch(outer) is True
+            assert is_redirect_uri_mismatch(outer) is True
 
     def test_unrelated_error_returns_false(self):
-        from slack_agents.tools.mcp_http_oauth import _is_redirect_uri_mismatch
+        from slack_agents.oauth.errors import is_redirect_uri_mismatch
 
-        assert _is_redirect_uri_mismatch(Exception("network down")) is False
+        assert is_redirect_uri_mismatch(Exception("network down")) is False
         # "redirect_uri" alone is not enough — needs a mismatch verb too.
-        assert _is_redirect_uri_mismatch(Exception("redirect_uri set")) is False
+        assert is_redirect_uri_mismatch(Exception("redirect_uri set")) is False
 
 
 class TestRedirectUriMismatchRecovery:
@@ -552,7 +553,7 @@ class TestRedirectUriMismatchRecovery:
             )
         )
 
-        await p._handle_redirect_uri_mismatch("U1")
+        await p._oauth.handle_redirect_uri_mismatch("U1")
 
         assert await framework_ctx.storage.get_oauth_client("my-mcp", p._redirect_uri) is None
         assert await framework_ctx.storage.get_oauth_token("U1", "my-mcp") is None

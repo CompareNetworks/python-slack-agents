@@ -47,7 +47,7 @@ async def test_proxy_plus_tool_sync_roundtrip(monkeypatch, store):
         "A2AClient",
         lambda **kw: FakeClient(A2AResult("completed", "FINAL ANSWER", "c", "t")),
     )
-    tool = a2a_agent.Provider(url="http://x", allowed_functions=[".*"], name="mya2a")
+    tool = a2a_agent.Provider(url="http://x", server_id="mya2a")
     await tool.initialize()
     proxy = Proxy(model="mya2a", max_input_tokens=10000)
 

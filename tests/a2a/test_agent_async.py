@@ -55,8 +55,7 @@ async def test_working_writes_inflight_record_and_returns_ack(monkeypatch, store
 
     p = a2a_agent.Provider(
         url="http://x",
-        allowed_functions=[".*"],
-        name="helper",
+        server_id="helper",
         framework_ctx=Ctx(),
         poll_interval=0.01,
         max_task_lifetime=5,

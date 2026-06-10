@@ -1700,7 +1700,6 @@ tools:
     auth: { type: bearer, token: "{RESEARCH_A2A_TOKEN}" }
     poll_interval: 5
     max_task_lifetime: 3600
-    allowed_functions: [".*"]
 ```
 
 ### Option B — dumb frontend
@@ -1715,7 +1714,6 @@ tools:
     type: slack_agents.a2a.agent
     url: "https://remote-agent.example.com"
     auth: { type: bearer, token: "{A2A_API_KEY}" }
-    allowed_functions: [".*"]
 ```
 
 The system prompt is ignored in Option B; it is used normally in Option A.
@@ -1723,27 +1721,27 @@ The system prompt is ignored in Option B; it is used normally in Option A.
 ## `a2a.agent` — tool provider
 
 `slack_agents.a2a.agent` is a `BaseToolProvider`. At startup it fetches the
-remote agent's Agent Card, builds a single tool definition from the card's
-name and description, and registers it like any other tool.
+remote agent's Agent Card and registers a single tool — named after the
+provider's key under `tools:` — using the card's description.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `url` | `str` | required | Base URL of the remote agent. The framework tries `<url>/.well-known/agent-card.json` automatically. |
 | `auth` | `dict` | none | Auth credentials. See [Auth](#auth) below. |
-| `name` | `str` | — | Override the tool name derived from the Agent Card. Use this when the card's name would produce an inconvenient slug, or when two agents would otherwise collide. |
-| `allowed_functions` | `list[str]` | required | Regex filters. Because every A2A provider exposes exactly one tool, `[".*"]` is almost always correct. |
 | `timeout` | `float` | `300` | HTTP timeout in seconds for individual A2A requests. |
 | `poll_interval` | `float` | `5` | Seconds between polling attempts for long-running tasks. |
 | `max_task_lifetime` | `float` | `3600` | Maximum seconds to poll before abandoning a task and delivering a timeout message. |
 
 **One tool per agent.** A2A is a single opaque channel — it has no mechanism to
 advertise a menu of typed tools the way MCP does. Each `a2a.agent` provider
-exposes exactly one free-text tool named after the agent (or overridden by
-`name`):
+exposes exactly one free-text tool, named after its key under `tools:`
+(slugified to satisfy the LLM tool-name rules — letters, digits, `_`, `-`).
+Rename the key to rename the tool; the key is also unique within `tools:`, so
+two agents never collide:
 
 ```json
 {
-  "name": "<name>",
+  "name": "<tools: key, slugified>",
   "description": "<from Agent Card>",
   "input_schema": {
     "type": "object",
@@ -1781,7 +1779,6 @@ tools:
   mya2a:
     type: slack_agents.a2a.agent
     url: "https://remote-agent.example.com"
-    allowed_functions: [".*"]
   import-files:
     type: slack_agents.tools.file_importer
     allowed_functions: [".*"]
@@ -1800,8 +1797,10 @@ calling an LLM it routes directly to the configured A2A tool.
 
 ## Auth
 
-Phase 1 supports static credentials only, resolved from environment variables
-at startup via the standard `{ENV_VAR}` interpolation.
+### Static / API-key auth (service-level)
+
+Credentials are resolved from environment variables at startup via the standard
+`{ENV_VAR}` interpolation. These are shared across all users.
 
 ```yaml
 # Bearer token — Authorization: Bearer <token>
@@ -1810,12 +1809,46 @@ auth: { type: bearer, token: "{A2A_API_KEY}" }
 # Arbitrary header
 auth: { type: header, name: "X-API-Key", value: "{A2A_API_KEY}" }
 
+# API-key scheme — sends the raw value as the named header
+# (matches an Agent Card that advertises apiKey security)
+auth: { type: apiKey, name: "Authorization", value: "{A2A_API_KEY}" }
+
 # No auth (default when omitted)
 auth: { type: none }
 ```
 
-Per-user OAuth auth (reusing the `oauth/` package) is planned for a future
-release.
+### Per-user OAuth (`auth: { type: oauth2 }`)
+
+Each Slack user authenticates separately to the remote agent. The framework
+uses that user's access token on subsequent calls, exactly as it does for
+OAuth-protected MCP servers (see [docs/oauth.md](oauth.md)).
+
+```yaml
+tools:
+  research-agent:
+    type: slack_agents.a2a.agent
+    url: "https://research.example.com"
+    auth: { type: oauth2 }
+```
+
+There is intentionally no `client_id`/`scopes` field. The provider discovers
+OAuth metadata from the remote agent's **Agent Card** (`securitySchemes.oauth2`
+→ `oauth2MetadataUrl`), performs Dynamic Client Registration, and uses the
+auth-code + PKCE flow. This means a server whose RFC 9728 protected-resource-metadata
+endpoint is missing or internal still works as long as its Agent Card advertises
+the oauth2 scheme and `oauth2MetadataUrl`.
+
+**User experience.** The first time a user invokes an OAuth-protected A2A agent,
+the framework posts an ephemeral "Authenticate" button in Slack. Clicking it
+opens the remote agent's auth server in the user's browser. After consent the
+browser redirects to the shared callback URL and the original request is
+completed automatically.
+
+**Required environment variables.** Per-user OAuth needs the shared ingress
+(same as MCP OAuth) — configure `PUBLIC_URL` and `OAUTH_SECRET_KEY` exactly
+as described in [docs/oauth.md](oauth.md#required-environment-variables). These
+are validated at startup; the agent refuses to start if they are missing or
+malformed.
 
 ## Long-running tasks
 
@@ -1855,6 +1888,25 @@ needed. The Socket Mode deploy-anywhere property is preserved.
 **Crash resilience.** In-flight task records are persisted in the storage
 backend. If the agent process restarts while tasks are in flight, they are
 re-discovered at startup and pollers are resumed automatically.
+
+**OAuth and async delivery.** The two async paths behave differently with
+respect to the user's token, and the framework is **push-preferred**:
+
+- **Push (webhook).** Delivery is *inbound* — the agent POSTs updates to the
+  ingress, which relays them to Slack without ever calling the agent back. No
+  token is involved at delivery time, so a task started while the user was
+  authenticated **still delivers even if their OAuth token later expires or is
+  revoked.** When a push webhook is registered for a task, the framework does
+  **not** also run the poller for it (avoiding redundant — potentially double —
+  delivery).
+- **Polling (fallback, no push).** Only used when push is not registered (the
+  agent doesn't support it, or no `PUBLIC_URL`). The poller calls `tasks/get`
+  *outbound*, which requires the user's token: it builds a fresh per-user client
+  from the stored token and refreshes silently — no Slack interaction happens
+  out-of-band. If the token cannot be refreshed (revoked, or the refresh
+  expired), the bot posts "Your session for this task has expired — please ask
+  again and re-authenticate when prompted." to the thread, instead of prompting
+  out-of-band where there is no safe way to do so.
 
 ## What a Slack user sees
 
@@ -1928,7 +1980,6 @@ tools:
     type: slack_agents.a2a.agent
     url: "https://remote-agent.example.com"
     push_notifications: true
-    allowed_functions: [".*"]
 ```
 
 **Ingress.** Push needs the in-process HTTP listener (shared with OAuth) and a
@@ -1968,9 +2019,6 @@ The following are not yet implemented. They are planned for future releases.
   path (a long-running task delivered out-of-band carries its text, not files).
 - **Atomic responses.** Responses are collected in full before being posted.
   Token-by-token streaming to Slack is not supported yet.
-- **Static auth only.** Auth credentials are fixed at startup from environment
-  variables. Per-Slack-user OAuth (each user authenticates separately to the
-  remote agent) is not yet supported.
 - **No A2A server mode.** This framework cannot be addressed as an A2A agent
   by other agents. It is a client only.
 

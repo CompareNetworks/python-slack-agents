@@ -4,10 +4,11 @@ import base64
 
 import pytest
 
-from slack_agents.config import validate_ingress_env
+from slack_agents.config import ingress_needed, oauth_needed, validate_ingress_env
 
 OAUTH = {"x": {"type": "slack_agents.tools.mcp_http_oauth"}}
 PUSH = {"p": {"type": "slack_agents.a2a.agent", "push_notifications": True}}
+A2A_OAUTH = {"my-agent": {"type": "slack_agents.a2a.agent", "auth": {"type": "oauth2"}}}
 
 
 def _good_key() -> str:
@@ -89,3 +90,53 @@ class TestMultipleErrors:
         msg = str(excinfo.value)
         assert "PUBLIC_URL" in msg
         assert "OAUTH_SECRET_KEY" in msg
+
+
+class TestA2AOAuth:
+    def test_a2a_oauth_triggers_ingress_needed(self):
+        assert ingress_needed(A2A_OAUTH) is True
+
+    def test_a2a_oauth_triggers_oauth_needed(self):
+        assert oauth_needed(A2A_OAUTH) is True
+
+    def test_a2a_oauth_missing_vars_raises_with_agent_name(self):
+        with pytest.raises(SystemExit) as excinfo:
+            validate_ingress_env(A2A_OAUTH)
+        msg = str(excinfo.value)
+        assert "PUBLIC_URL" in msg
+        assert "OAUTH_SECRET_KEY" in msg
+        assert "my-agent" in msg
+        assert "OAuth-protected A2A agents" in msg
+
+    def test_a2a_oauth_missing_public_url_raises(self, monkeypatch):
+        monkeypatch.setenv("OAUTH_SECRET_KEY", _good_key())
+        with pytest.raises(SystemExit) as excinfo:
+            validate_ingress_env(A2A_OAUTH)
+        msg = str(excinfo.value)
+        assert "PUBLIC_URL" in msg
+        assert "my-agent" in msg
+
+    def test_a2a_oauth_missing_secret_key_raises(self, monkeypatch):
+        monkeypatch.setenv("PUBLIC_URL", "https://a.example.com")
+        with pytest.raises(SystemExit) as excinfo:
+            validate_ingress_env(A2A_OAUTH)
+        msg = str(excinfo.value)
+        assert "OAUTH_SECRET_KEY" in msg
+        assert "my-agent" in msg
+
+    def test_a2a_oauth_valid_env_does_not_raise(self, monkeypatch):
+        monkeypatch.setenv("PUBLIC_URL", "https://a.example.com")
+        monkeypatch.setenv("OAUTH_SECRET_KEY", _good_key())
+        validate_ingress_env(A2A_OAUTH)  # must not raise
+
+    def test_a2a_static_bearer_does_not_trigger_oauth(self):
+        static = {
+            "agent": {"type": "slack_agents.a2a.agent", "auth": {"type": "bearer", "token": "x"}}
+        }
+        assert oauth_needed(static) is False
+        assert ingress_needed(static) is False
+
+    def test_a2a_no_auth_does_not_trigger_oauth(self):
+        no_auth = {"agent": {"type": "slack_agents.a2a.agent"}}
+        assert oauth_needed(no_auth) is False
+        assert ingress_needed(no_auth) is False
