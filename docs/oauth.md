@@ -49,8 +49,12 @@ openssl rand -base64 32
 or
 
 ```bash
-python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+python3 -c "import secrets, base64; print(base64.b64encode(secrets.token_bytes(32)).decode())"
 ```
+
+The value must be **standard** base64 (the validator decodes it with
+`base64.b64decode(..., validate=True)`). Don't use `secrets.token_urlsafe`, which
+emits URL-safe base64 (`-`/`_`, unpadded) that the validator rejects.
 
 Treat this value like any other long-lived secret: keep it out of source
 control, rotate it the same way you rotate database credentials. Rotating it

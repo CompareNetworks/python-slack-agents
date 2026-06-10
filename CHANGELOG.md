@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Fixed
+
+- `docs/oauth.md`: corrected the `OAUTH_SECRET_KEY` generation snippet. The documented `secrets.token_urlsafe(32)` emits URL-safe base64 (`-`/`_`, unpadded) that the validator (`base64.b64decode(..., validate=True)`) rejects; use `openssl rand -base64 32` or `base64.b64encode(secrets.token_bytes(32))` instead.
+
 ## [0.9.1] - 2026-06-09
 
 ### Added
