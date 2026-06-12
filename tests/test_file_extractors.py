@@ -71,7 +71,7 @@ async def test_registry_size_limit():
     result = await registry.process_file(big_data, "text/plain", "huge.txt", None, None)
     assert result is not None
     assert result["type"] == "text"
-    assert "was not processed" in result["text"]
+    assert "could not be read" in result["text"]
     assert "exceeds" in result["text"]
     assert "huge.txt" in result["text"]
 
@@ -87,7 +87,10 @@ async def test_registry_at_limit_is_ok():
 async def test_registry_unhandled_mime():
     registry = _make_registry()
     result = await registry.process_file(b"data", "audio/mpeg", "song.mp3", None, None)
-    assert result is None
+    assert result is not None
+    assert result["type"] == "text"
+    assert "could not be read" in result["text"]
+    assert "unsupported type" in result["text"]
 
 
 def test_registry_empty_providers():
@@ -553,8 +556,11 @@ async def test_provider_raises_on_unknown_handler():
         await provider.call_tool("nonexistent_handler", f, None, None)
 
 
-async def test_registry_returns_none_on_import_error():
-    """FileHandlerRegistry.process_file returns None when import raises."""
+async def test_registry_returns_descriptor_on_import_error():
+    """FileHandlerRegistry.process_file returns a descriptor block when import raises."""
     registry = _make_registry()
     result = await registry.process_file(b"not a pdf", "application/pdf", "bad.pdf", None, None)
-    assert result is None
+    assert result is not None
+    assert result["type"] == "text"
+    assert "could not be read" in result["text"]
+    assert "extraction failed" in result["text"]

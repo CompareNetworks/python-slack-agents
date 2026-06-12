@@ -378,30 +378,6 @@ class SlackAgent:
             )
             messages = await store.get_messages(conversation_id)
 
-            # Check for unprocessable files before starting the agent loop
-            if files:
-                unhandled = []
-                for f in files:
-                    mime = f.get("mimetype", "")
-                    if mime and not self._file_registry.can_handle(mime):
-                        unhandled.append(mime)
-                if unhandled:
-                    supported = sorted(self._file_registry.supported_mimes)
-                    unsupported_str = ", ".join(sorted(set(unhandled)))
-                    if supported:
-                        supported_str = ", ".join(supported)
-                        msg = (
-                            f"I can't process files of type {unsupported_str}."
-                            f" Supported types: {supported_str}"
-                        )
-                    else:
-                        msg = (
-                            "I can't process file attachments"
-                            " (no file import handlers are configured)."
-                        )
-                    await say(text=msg, thread_ts=thread_ts)
-                    return
-
             user_content, file_meta = await self._build_user_content(
                 text, files, user_conversation_context, storage
             )
@@ -692,15 +668,24 @@ class SlackAgent:
         user_id: str,
         text: str,
         is_error: bool,
+        files: list[dict] | None = None,
     ) -> None:
         """Surface a long-running A2A task's result into its Slack thread.
 
-        Routes by LLM type: the dumb a2a.proxy (which advertises
-        ``relays_async_raw = True``) just posts the result text raw — re-entering
-        the loop would bounce it back to the A2A agent. A real LLM re-enters the
-        loop via ``_run_turn`` so it can react to / synthesize the result, and
-        the turn persists naturally.
+        Uploads any artifact files (so the user gets them), then routes the text:
+        the dumb a2a.proxy posts it raw; a real LLM re-enters the loop to react.
         """
+        for f in files or []:
+            try:
+                await upload_file(
+                    self._slack_client,
+                    channel_id,
+                    thread_id,
+                    content=f.get("data", b""),
+                    filename=f.get("filename", "file"),
+                )
+            except Exception:
+                logger.exception("a2a async: file upload failed in %s", thread_id)
         if getattr(self.llm, "relays_async_raw", False):
             await self._slack_client.chat_postMessage(
                 channel=channel_id, thread_ts=thread_id, text=text
@@ -818,6 +803,8 @@ class SlackAgent:
             raise RuntimeError(f"Failed to initialize tool providers: {', '.join(all_failed)}")
 
         self._file_registry = FileHandlerRegistry(self._input_file_providers)
+        if self._framework_ctx is not None:
+            self._framework_ctx.file_registry = self._file_registry
 
     async def _init_storage(self) -> None:
         """Initialize storage and conversation manager."""

@@ -83,3 +83,6 @@ class FrameworkContext:
     # tools (e.g. a2a.agent) can forward attachments. Each value is a list of
     # {data: bytes, filename, mimeType}. Cleared after each turn.
     pending_uploads: dict = field(default_factory=dict)
+    # The agent's FileHandlerRegistry, bound at startup. Lets tools (e.g. a2a.agent)
+    # extract inbound file artifacts through the same handlers used for user uploads.
+    file_registry: object = None

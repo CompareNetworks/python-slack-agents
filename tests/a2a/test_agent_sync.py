@@ -146,3 +146,50 @@ def test_a2a_has_no_allowed_functions_param():
     assert "allowed_functions" not in inspect.signature(a2a_agent.Provider.__init__).parameters
     p = a2a_agent.Provider(url="http://x", server_id="a")
     assert p._allowed_patterns[0].fullmatch("any-tool-name")
+
+
+async def test_artifact_only_result_is_visible_to_llm(monkeypatch, store):
+    from slack_agents.files import FileHandlerRegistry
+    from slack_agents.tools.file_importer import Provider as FileImporter
+
+    csv = {"data": b"id,intent\ngeo-01,hello\n", "filename": "prompts.csv", "mimeType": "text/csv"}
+
+    class FileClient:
+        async def resolve_card(self):
+            return {"name": "Helper", "description": "d", "skills_text": ""}
+
+        async def send(self, message, context_id, task_id=None, files=None, push_config=None):
+            # terminal result whose ONLY content is a CSV artifact (no text part)
+            return A2AResult("completed", "", "c", "t", files=[csv])
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(a2a_agent, "A2AClient", lambda **kw: FileClient())
+
+    class Ctx:
+        agent_name = "demo"
+        slack_client = None
+        storage = store
+        deliver_async_result = None
+        pending_uploads = {}
+        file_registry = FileHandlerRegistry([FileImporter([".*"])])
+
+    p = a2a_agent.Provider(url="http://x", server_id="helper", framework_ctx=Ctx())
+    await p.initialize()
+    res = await p.call_tool("helper", {"message": "go"}, UCC, store)
+
+    assert res["files"] == [csv]  # still uploaded to the thread
+    assert res["content"] != "(empty result)"  # LLM is no longer blind
+    assert "prompts.csv" in res["content"]
+    assert "hello" in res["content"]  # extracted CSV content
+    assert "Do NOT repeat" in res["content"]  # tagged "already shown"
+
+
+async def test_input_required_with_no_text_or_files_shows_affordance(monkeypatch, store):
+    # input-required with neither text nor an artifact: the LLM should still get the
+    # "needs more input" affordance, not "(empty result)".
+    p, _ = await _provider(monkeypatch, A2AResult("input-required", "", "c", "t"))
+    res = await p.call_tool("helper", {"message": "x"}, UCC, store)
+    assert res["content"] == "(the agent needs more input)"
+    assert res["is_error"] is False

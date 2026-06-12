@@ -21,15 +21,17 @@ class AsyncTaskManager:
         poll_interval: float = 5,
         max_lifetime: float = 3600,
         client_factory=None,
+        framework_ctx=None,
     ):
         self._ns = f"a2a:inflight:{server_key}"
         self._client = client
         self._client_factory = client_factory
         self._storage = storage
-        # ASYNC callable(**{channel_id, thread_id, user_id, text, is_error})
+        # ASYNC callable(**{channel_id, thread_id, user_id, text, is_error, files})
         self._deliver = deliver
         self._poll_interval = poll_interval
         self._max_lifetime = max_lifetime
+        self._framework_ctx = framework_ctx
         self._tasks: dict[str, asyncio.Task] = {}
 
     async def track(self, record: dict) -> None:
@@ -67,12 +69,25 @@ class AsyncTaskManager:
                         if not is_error
                         else f"task ended in state {r.state}"
                     )
+                    if r.files:
+                        from slack_agents.a2a.artifacts import files_to_llm_text  # noqa: PLC0415
+
+                        registry = getattr(self._framework_ctx, "file_registry", None)
+                        ucc = {
+                            "user_id": record["user_id"],
+                            "channel_id": record["channel_id"],
+                            "thread_id": record["thread_id"],
+                        }
+                        extra = await files_to_llm_text(r.files, registry, ucc, self._storage)
+                        if extra:
+                            text = f"{text}\n\n{extra}"
                     await self._deliver(
                         channel_id=record["channel_id"],
                         thread_id=record["thread_id"],
                         user_id=record["user_id"],
                         text=text,
                         is_error=is_error,
+                        files=r.files or [],
                     )
                     return
                 if elapsed >= self._max_lifetime:
@@ -82,6 +97,7 @@ class AsyncTaskManager:
                         user_id=record["user_id"],
                         text="The long-running task did not finish in time and was abandoned.",
                         is_error=True,
+                        files=[],
                     )
                     return
                 await asyncio.sleep(self._poll_interval)
@@ -107,6 +123,7 @@ class AsyncTaskManager:
                         "Please ask again and re-authenticate when prompted."
                     ),
                     is_error=True,
+                    files=[],
                 )
             else:
                 logger.exception("A2A %s: poller for task %s crashed", self._ns, tid)

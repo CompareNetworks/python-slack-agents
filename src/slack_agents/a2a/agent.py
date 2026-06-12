@@ -8,7 +8,7 @@ import secrets
 import time
 
 from slack_agents import UserConversationContext
-from slack_agents.a2a.client import A2AClient, classify
+from slack_agents.a2a.client import A2AClient, A2AResult, classify
 from slack_agents.a2a.oauth import build_user_a2a_client
 from slack_agents.storage.base import BaseStorageProvider
 from slack_agents.tools.base import (
@@ -122,6 +122,7 @@ class Provider(BaseToolProvider):
                 deliver=self._framework_ctx.deliver_async_result,
                 poll_interval=self._poll_interval,
                 max_lifetime=self._max_task_lifetime,
+                framework_ctx=self._framework_ctx,
             )
             if self._oauth_mode:
                 manager_kwargs["client"] = None
@@ -335,7 +336,15 @@ class Provider(BaseToolProvider):
         # Push bookkeeping: create the record on the first send; on every send record this
         # reply's messageId as delivered, so the server's re-push of it is de-duplicated.
         if self._push_enabled and r.task_id:
-            await self._track_push(storage, r, user_conversation_context, push_config)
+            await self._track_push(
+                storage,
+                r,
+                user_conversation_context,
+                push_config,
+                reacted_id=(
+                    r.message_id if classify(r.state) in ("terminal", "interrupted") else None
+                ),
+            )
 
         new_context = r.context_id or context_id
         bucket = classify(r.state)
@@ -344,8 +353,9 @@ class Provider(BaseToolProvider):
             # input-required / auth-required: the agent wants another message. Keep BOTH
             # ids so the next turn continues the SAME task (and its server-side state).
             await storage.set(ctx_ns, thread_id, {"context_id": new_context, "task_id": r.task_id})
+            content = await self._result_content(r, user_conversation_context, storage)
             return {
-                "content": r.text or "(the agent needs more input)",
+                "content": content or "(the agent needs more input)",
                 "is_error": False,
                 "files": r.files,
             }
@@ -365,7 +375,28 @@ class Provider(BaseToolProvider):
                 recovery=RECOVERY_CONTACT_SUPPORT,
                 message=r.text or f"A2A task ended in state {r.state!r}.",
             )
-        return {"content": r.text or "(empty result)", "is_error": False, "files": r.files}
+        content = await self._result_content(r, user_conversation_context, storage)
+        return {"content": content or "(empty result)", "is_error": False, "files": r.files}
+
+    async def _result_content(
+        self,
+        r: A2AResult,
+        ucc: UserConversationContext,
+        storage: BaseStorageProvider,
+    ) -> str:
+        """Combine the agent's text with tagged, extracted artifact content.
+
+        Files are always uploaded to the thread, so artifacts are surfaced to the
+        LLM as 'already shown' context (reference, don't reproduce). Returns "" when
+        the reply has neither text nor files, so each caller supplies its own default.
+        """
+        from slack_agents.a2a.artifacts import files_to_llm_text  # noqa: PLC0415
+
+        registry = getattr(self._framework_ctx, "file_registry", None)
+        extra = await files_to_llm_text(r.files, registry, ucc, storage) if r.files else ""
+        if r.text and extra:
+            return f"{r.text}\n\n{extra}"
+        return extra or r.text or ""
 
     def _pending_uploads(self, thread_id: str) -> list[dict]:
         """Files the user attached this turn, stashed on the FrameworkContext by `_run_turn`."""
@@ -387,8 +418,15 @@ class Provider(BaseToolProvider):
             return None
         return {"url": f"{public_url}/a2a/push", "token": secrets.token_urlsafe(24)}
 
-    async def _track_push(self, storage, r, ucc, push_config) -> None:
-        """Persist/maintain the push record so later pushes correlate and dedup correctly."""
+    async def _track_push(
+        self, storage, r, ucc, push_config, *, reacted_id: str | None = None
+    ) -> None:
+        """Persist/maintain the push record so later pushes correlate and dedup correctly.
+
+        `reacted_id` is the sync reply's status message id when that reply was already
+        actionable (terminal/interrupted) — seeding it prevents push from re-reacting to
+        the status the synchronous path already handled.
+        """
         from slack_agents.a2a.push import PUSH_NS, mark_delivered, save_record  # noqa: PLC0415
 
         delivered = [r.message_id] if r.message_id else []
@@ -401,6 +439,7 @@ class Provider(BaseToolProvider):
                 user_id=ucc["user_id"],
                 token=push_config["token"],
                 delivered_ids=delivered,
+                reacted_ids=[reacted_id] if reacted_id else [],
             )
         elif delivered:  # later send — dedup this reply's id against the existing record
             rec = await storage.get(PUSH_NS, r.task_id)

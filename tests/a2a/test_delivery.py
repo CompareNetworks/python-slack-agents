@@ -97,3 +97,52 @@ async def test_resume_respawns_pollers_from_storage(store):
     await mgr.resume()
     await asyncio.wait_for(mgr.wait_idle(), timeout=2)
     assert delivered[0]["text"] == "resumed"
+
+
+async def test_poller_delivers_files_and_tagged_text(store):
+    from slack_agents.a2a.client import A2AResult
+    from slack_agents.a2a.delivery import AsyncTaskManager
+    from slack_agents.files import FileHandlerRegistry
+    from slack_agents.tools.file_importer import Provider as FileImporter
+
+    csv = {"data": b"id,intent\n1,hello\n", "filename": "out.csv", "mimeType": "text/csv"}
+
+    class Client:
+        async def get_task(self, tid):
+            return A2AResult("completed", "all done", "c", tid, files=[csv])
+
+        async def close(self):
+            pass
+
+    delivered = {}
+
+    async def deliver(*, channel_id, thread_id, user_id, text, is_error, files=None):
+        delivered.update(text=text, files=files, is_error=is_error)
+
+    class Ctx:
+        file_registry = FileHandlerRegistry([FileImporter([".*"])])
+
+    mgr = AsyncTaskManager(
+        server_key="helper",
+        client=Client(),
+        storage=store,
+        deliver=deliver,
+        poll_interval=0,
+        framework_ctx=Ctx(),
+    )
+    await mgr.track(
+        {
+            "task_id": "t1",
+            "context_id": "c",
+            "channel_id": "C1",
+            "thread_id": "T1",
+            "user_id": "U1",
+            "created_at": 0,
+        }
+    )
+    await mgr.wait_idle()
+
+    assert delivered["files"] == [csv]  # file now delivered (was dropped)
+    assert "all done" in delivered["text"]
+    assert "out.csv" in delivered["text"]  # tagged artifact text
+    assert "hello" in delivered["text"]

@@ -1912,6 +1912,31 @@ respect to the user's token, and the framework is **push-preferred**:
   again and re-authenticate when prompted." to the thread, instead of prompting
   out-of-band where there is no safe way to do so.
 
+## File artifacts and the LLM
+
+When a remote A2A agent returns a file artifact, the framework uploads it to the
+Slack thread **and** makes its content visible to the local LLM as context. Text
+artifacts (CSV, Markdown, plain text, and — if an `import-files` provider is
+configured — PDF/DOCX/XLSX/PPTX) are extracted through the same file-import
+handlers used for user uploads; unparseable or oversized files (and types with no
+handler) become a short metadata placeholder the LLM can acknowledge.
+
+Because the file is always shown to the user directly, each artifact is tagged
+*"already delivered to the user — reference it, don't reproduce it."* The LLM
+summarizes or acts on the content but won't re-paste it.
+
+For long-running tasks, artifacts arriving via polling are delivered (file +
+context) when the task finishes. For push, every update is uploaded to the thread
+as it streams and its content (status text + extracted artifact text) is
+**accumulated into the LLM's context**; the LLM is then given **one** turn per
+*actionable* status — a terminal state (`completed`/`failed`/`canceled`/`rejected`)
+or a needs-input state (`input-required`/`auth-required`) — flushing everything
+accumulated since the last turn. Progress states (`working`/`submitted`) stream to
+the thread and accumulate silently but never trigger an LLM turn, so a chatty agent
+doesn't cause a flurry. A task that pauses for input and later completes therefore
+yields two turns (the question, then the wrap-up); re-pushes of the same status are
+de-duplicated.
+
 ## What a Slack user sees
 
 **For a fast response (synchronous path):**

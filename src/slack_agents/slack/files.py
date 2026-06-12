@@ -70,21 +70,9 @@ async def process_files_for_message(
             storage,
             file_id=file_info.get("id"),
         )
-        if block is not None:
-            if block.get("type") != "image":
-                meta["raw_bytes"] = file_bytes
-            results.append((block, meta))
-        else:
+        if block.get("type") != "image":
             meta["raw_bytes"] = file_bytes
-            results.append(
-                (
-                    {
-                        "type": "text",
-                        "text": f"[File: {filename} — could not extract content]",
-                    },
-                    meta,
-                )
-            )
+        results.append((block, meta))
 
     return results
 

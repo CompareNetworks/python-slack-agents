@@ -171,3 +171,178 @@ async def test_artifact_file_uploaded(store):
     assert up["filename"] == "file_report.csv"
     assert up["content"].startswith(b"attempt,guess,result")
     assert up["thread_ts"] == "Th"
+
+
+# --- terminal-state detection + completion reaction -----------------------
+
+
+class ReactCtx(Ctx):
+    """Ctx that records LLM completion reactions and exposes a file registry."""
+
+    def __init__(self, storage, slack, file_registry=None):
+        super().__init__(storage, slack)
+        self.file_registry = file_registry
+        self.reacted = []
+
+    async def deliver_async_result(self, **kw):
+        self.reacted.append(kw)
+
+
+def test_push_is_terminal_detects_terminal_states():
+    assert push.push_is_terminal(status_body(state="TASK_STATE_COMPLETED"))
+    assert push.push_is_terminal({"task": {"status": {"state": "TASK_STATE_FAILED"}}})
+    assert not push.push_is_terminal(status_body(state="TASK_STATE_WORKING"))
+    assert not push.push_is_terminal(artifact_body())
+
+
+def test_push_is_actionable_includes_interrupted_not_progress():
+    assert push.push_is_actionable(status_body(state="TASK_STATE_COMPLETED"))
+    assert push.push_is_actionable(status_body(state="TASK_STATE_FAILED"))
+    assert push.push_is_actionable(status_body(state="TASK_STATE_INPUT_REQUIRED"))
+    assert push.push_is_actionable(status_body(state="TASK_STATE_AUTH_REQUIRED"))
+    assert not push.push_is_actionable(status_body(state="TASK_STATE_WORKING"))
+    assert not push.push_is_actionable(status_body(state="TASK_STATE_SUBMITTED"))
+    assert not push.push_is_actionable(artifact_body())  # stateless
+
+
+async def test_terminal_push_fires_one_reaction(store):
+    await push.save_record(store, "T", channel_id="C1", thread_id="Th", user_id="U", token="t")
+    ctx = ReactCtx(store, FakeSlack())
+    app = {"a2a_push_ctx": ctx}
+    body = status_body(
+        task_id="T", message_id="Mdone", text="all done", state="TASK_STATE_COMPLETED"
+    )
+    resp = await push.handle_push(FakeReq(body, app, token="t"))
+    assert resp.status == 200
+    assert len(ctx.reacted) == 1  # exactly one wrap-up reaction
+    assert "all done" in ctx.reacted[0]["text"]
+    assert ctx.reacted[0]["is_error"] is False
+    assert ctx.reacted[0]["files"] == []  # already uploaded by the loop; not re-sent
+    assert "Mdone" in (await store.get(push.PUSH_NS, "T"))["reacted_ids"]
+
+
+async def test_failed_terminal_push_marks_is_error(store):
+    await push.save_record(store, "T", channel_id="C1", thread_id="Th", user_id="U", token="t")
+    ctx = ReactCtx(store, FakeSlack())
+    app = {"a2a_push_ctx": ctx}
+    body = status_body(task_id="T", message_id="Mf", text="boom", state="TASK_STATE_FAILED")
+    await push.handle_push(FakeReq(body, app, token="t"))
+    assert ctx.reacted[0]["is_error"] is True
+
+
+async def test_terminal_push_skips_reaction_when_already_reacted(store):
+    await push.save_record(store, "T", channel_id="C1", thread_id="Th", user_id="U", token="t")
+    rec = await store.get(push.PUSH_NS, "T")
+    rec["reacted_ids"] = ["Magain"]  # this status was already reacted to
+    await store.set(push.PUSH_NS, "T", rec)
+    ctx = ReactCtx(store, FakeSlack())
+    app = {"a2a_push_ctx": ctx}
+    body = status_body(task_id="T", message_id="Magain", text="dup", state="TASK_STATE_COMPLETED")
+    await push.handle_push(FakeReq(body, app, token="t"))
+    assert ctx.reacted == []  # guarded: no double-react on the same status
+
+
+async def test_content_free_terminal_push_still_reacts(store):
+    # A push agent streams content, then closes with a bare COMPLETED status (no
+    # message, no artifact). extract_items() -> [] so there are no new items, but the
+    # wrap-up reaction must still fire exactly once.
+    await push.save_record(store, "T", channel_id="C1", thread_id="Th", user_id="U", token="t")
+    ctx = ReactCtx(store, FakeSlack())
+    app = {"a2a_push_ctx": ctx}
+    body = {"statusUpdate": {"taskId": "T", "status": {"state": "TASK_STATE_COMPLETED"}}}
+    resp = await push.handle_push(FakeReq(body, app, token="t"))
+    assert resp.status == 200
+    assert len(ctx.reacted) == 1
+    assert ctx.reacted[0]["text"] == "(task complete)"
+    assert "state:TASK_STATE_COMPLETED" in (await store.get(push.PUSH_NS, "T"))["reacted_ids"]
+
+
+async def test_working_push_does_not_react_but_accumulates(store):
+    await push.save_record(store, "T", channel_id="C1", thread_id="Th", user_id="U", token="t")
+    ctx = ReactCtx(store, FakeSlack())
+    app = {"a2a_push_ctx": ctx}
+    body = status_body(
+        task_id="T", message_id="P1", text="Generating: 1/4", state="TASK_STATE_WORKING"
+    )
+    await push.handle_push(FakeReq(body, app, token="t"))
+    assert ctx.reacted == []  # progress never triggers an LLM turn
+    assert ctx.slack_client.posts[0]["text"] == "Generating: 1/4"  # still shown to the user
+    assert "Generating: 1/4" in (await store.get(push.PUSH_NS, "T"))["llm_context"]  # accumulated
+
+
+async def test_input_required_push_reacts(store):
+    await push.save_record(store, "T", channel_id="C1", thread_id="Th", user_id="U", token="t")
+    ctx = ReactCtx(store, FakeSlack())
+    app = {"a2a_push_ctx": ctx}
+    body = status_body(
+        task_id="T",
+        message_id="Q1",
+        text="Which competitor should I focus on?",
+        state="TASK_STATE_INPUT_REQUIRED",
+    )
+    await push.handle_push(FakeReq(body, app, token="t"))
+    assert len(ctx.reacted) == 1
+    assert ctx.reacted[0]["is_error"] is False
+    assert "Which competitor" in ctx.reacted[0]["text"]
+
+
+async def test_input_required_then_completed_react_twice(store):
+    await push.save_record(store, "T", channel_id="C1", thread_id="Th", user_id="U", token="t")
+    ctx = ReactCtx(store, FakeSlack())
+    app = {"a2a_push_ctx": ctx}
+    # 1) agent blocks mid-task asking for input -> first reaction
+    await push.handle_push(
+        FakeReq(
+            status_body(
+                task_id="T", message_id="Q1", text="pick one?", state="TASK_STATE_INPUT_REQUIRED"
+            ),
+            app,
+            token="t",
+        )
+    )
+    # 2) later it finishes -> second, distinct reaction (one-shot guard would have suppressed this)
+    await push.handle_push(
+        FakeReq(
+            status_body(
+                task_id="T", message_id="Done", text="report ready", state="TASK_STATE_COMPLETED"
+            ),
+            app,
+            token="t",
+        )
+    )
+    assert len(ctx.reacted) == 2
+    assert "pick one?" in ctx.reacted[0]["text"]
+    assert "report ready" in ctx.reacted[1]["text"]
+    assert "pick one?" not in ctx.reacted[1]["text"]  # flushed; not re-fed
+
+
+async def test_pushed_artifact_accumulates_into_terminal_reaction(store):
+    # The core fix: an artifact pushed BEFORE the terminal status must still reach the
+    # LLM as context on the wrap-up turn (artifact arrives in its own push, separate
+    # from the terminal status body).
+    from slack_agents.files import FileHandlerRegistry
+    from slack_agents.tools.file_importer import Provider as FileImporter
+
+    await push.save_record(store, "T", channel_id="C1", thread_id="Th", user_id="U", token="t")
+    ctx = ReactCtx(store, FakeSlack(), file_registry=FileHandlerRegistry([FileImporter([".*"])]))
+    app = {"a2a_push_ctx": ctx}
+    # 1) the report artifact (stateless artifactUpdate) — uploaded, accumulated, no reaction
+    await push.handle_push(FakeReq(artifact_body(task_id="T", artifact_id="A1"), app, token="t"))
+    assert ctx.reacted == []
+    assert len(ctx.slack_client.uploads) == 1  # report file delivered to the thread
+    # 2) the terminal completed status (no file in its body) — reaction flushes the buffer
+    await push.handle_push(
+        FakeReq(
+            status_body(
+                task_id="T", message_id="Done", text="Report ready.", state="TASK_STATE_COMPLETED"
+            ),
+            app,
+            token="t",
+        )
+    )
+    assert len(ctx.reacted) == 1
+    text = ctx.reacted[0]["text"]
+    assert "Report ready." in text  # the terminal status text
+    assert "attempt,guess,result" in text  # the artifact's extracted content (from earlier push)
+    assert "Do NOT repeat" in text  # tagged 'already shown'
+    assert ctx.reacted[0]["files"] == []  # not re-uploaded
