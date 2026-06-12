@@ -6,9 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-06-12
+
 ### Fixed
 
+- A2A file artifacts are now visible to the local LLM, so it no longer re-requests artifacts it can't see and can discuss/synthesize them. On the synchronous path the extracted artifact text is folded into the tool result; poller-delivered tasks now also deliver their files (previously dropped); push updates stream to the thread while their content (status text + extracted artifact text) accumulates into the LLM's context, and the LLM gets one turn per actionable status — terminal or needs-input — flushing the accumulated context (progress states never trigger a turn).
 - `docs/oauth.md`: corrected the `OAUTH_SECRET_KEY` generation snippet. The documented `secrets.token_urlsafe(32)` emits URL-safe base64 (`-`/`_`, unpadded) that the validator (`base64.b64decode(..., validate=True)`) rejects; use `openssl rand -base64 32` or `base64.b64encode(secrets.token_bytes(32))` instead.
+
+### Changed
+
+- Unparseable or oversized file uploads now surface to the LLM as a metadata placeholder instead of rejecting the message, so the agent can respond conversationally.
 
 ## [0.9.1] - 2026-06-09
 
