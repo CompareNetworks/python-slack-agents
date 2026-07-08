@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-07-08
+
+### Fixed
+
+- OAuth (MCP and A2A): automatically re-register when the per-server dynamic client registration (DCR) has been deleted at the IdP. Previously a reaped client (e.g. Keycloak purging idle DCR clients) left every user stuck in a repeating authorize timeout, because the stale client registration was cached and never refreshed. The agent now probes the IdP authorize endpoint and re-registers a fresh client when the cached one is gone.
+
 ## [0.9.2] - 2026-06-12
 
 ### Fixed

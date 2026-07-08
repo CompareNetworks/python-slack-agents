@@ -370,3 +370,89 @@ async def test_static_401_with_auth_card_returns_actionable_hint(store):
     payload = json.loads(result["content"])
     assert payload["code"] == "auth_required"
     assert "oauth2" in payload["message"]
+
+
+# ---------------------------------------------------------------------------
+# Reaped-DCR-client self-heal via the A2A oauth path (shares PerUserOAuth)
+# ---------------------------------------------------------------------------
+
+
+async def test_a2a_oauth_reregisters_reaped_client(monkeypatch):
+    import httpx
+    from mcp.shared.auth import OAuthMetadata
+
+    from slack_agents import FrameworkContext, PendingFlowsRegistry
+    from slack_agents.a2a.oauth import build_per_user_oauth
+    from slack_agents.oauth.crypto import derive_subkeys
+    from slack_agents.oauth.discovery import DiscoveryResult
+    from slack_agents.storage.base import OAuthClientRow
+
+    storage = Sqlite(path=":memory:")
+    await storage.initialize()
+    ctx = FrameworkContext(
+        bot_token="xoxb",
+        agent_name="t",
+        slack_client=None,
+        storage=storage,
+        pending_flows=PendingFlowsRegistry(),
+    )
+    sk, tk = derive_subkeys(b"0" * 32)
+    puo = build_per_user_oauth(
+        card_oauth={
+            "metadata_url": "https://idp.example.com/.well-known/oauth-authorization-server",
+            "scopes": ["agent:read"],
+            "required_scopes": ["agent:read"],
+        },
+        server_url="https://remote.example.com/a2a",
+        server_id="remote-a2a",
+        framework_ctx=ctx,
+        state_key=sk,
+        token_key=tk,
+        public_url="https://a.example.com",
+        auth_timeout=300,
+    )
+    asm = OAuthMetadata(
+        issuer="https://idp.example.com/realms/x",
+        authorization_endpoint="https://idp.example.com/realms/x/protocol/openid-connect/auth",
+        token_endpoint="https://idp.example.com/realms/x/protocol/openid-connect/token",
+        registration_endpoint="https://idp.example.com/realms/x/clients-registrations/openid-connect",
+    )
+    puo._cached = DiscoveryResult(asm, None, scope_catalog=["agent:read"])
+    await storage.put_oauth_client(
+        "remote-a2a",
+        puo._redirect_uri,
+        OAuthClientRow(
+            client_id="dead-cid",
+            client_secret=None,
+            metadata_json="{}",
+            authorization_server="",
+            created_at=1000,
+            updated_at=1000,
+        ),
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":  # liveness probe → client is gone
+            return httpx.Response(400, text="Client not found")
+        return httpx.Response(  # DCR re-registration
+            200,
+            json={
+                "client_id": "fresh-cid",
+                "redirect_uris": [puo._redirect_uri],
+                "token_endpoint_auth_method": "none",
+            },
+        )
+
+    import slack_agents.oauth.flow as flowmod
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(
+        flowmod.httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler))
+    )
+
+    await puo._ensure_client_registered()
+
+    row = await storage.get_oauth_client("remote-a2a", puo._redirect_uri)
+    assert row is not None
+    assert row.client_id == "fresh-cid"
+    await storage.close()

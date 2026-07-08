@@ -230,9 +230,65 @@ class PerUserOAuth:
         if asm is not None:
             oauth.context.oauth_metadata = asm
 
+    async def _client_registration_is_live(self, client_id: str) -> bool | None:
+        """Probe the IdP authorize endpoint to see whether the cached DCR client
+        still exists.
+
+        IdPs hard-delete DCR clients that sit idle (our Keycloak cronjob reaps
+        clients with no login/refresh activity for 14 days). Once that happens the
+        stored client_id is dead: every authorize with it returns an IdP error page
+        and the user's OAuth flow times out. This probe detects the dead client so
+        `_ensure_client_registered` can re-register before the SDK uses it.
+
+        Returns:
+            True  — the IdP accepted the client_id (client is live).
+            False — the IdP reports the client is unknown/deleted (HTTP 400,
+                    "Client not found").
+            None  — inconclusive (no discovered authorize endpoint, or the probe
+                    request failed); the caller must NOT delete on None.
+        """
+        asm = self._cached.authorization_server_metadata if self._cached else None
+        if asm is None or asm.authorization_endpoint is None:
+            return None
+        params = {
+            "response_type": "code",
+            "client_id": client_id,
+            "redirect_uri": self._redirect_uri,
+            "scope": "openid",
+            "state": "liveness-probe",
+        }
+        try:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(10.0), follow_redirects=False
+            ) as http:
+                resp = await http.get(str(asm.authorization_endpoint), params=params)
+        except Exception:
+            logger.debug(
+                "oauth: %s client liveness probe request failed",
+                self._server_id,
+                exc_info=True,
+            )
+            return None
+        if _client_not_found(resp.status_code, resp.text):
+            return False
+        return True
+
     async def _ensure_client_registered(self) -> None:
-        if await self._storage.get_oauth_client(self._server_id, self._redirect_uri) is not None:
-            return
+        existing = await self._storage.get_oauth_client(self._server_id, self._redirect_uri)
+        if existing is not None:
+            # Trust the cached client unless the IdP tells us it is gone. A reaped
+            # DCR client would otherwise be reused forever — every authorize with a
+            # dead client_id times out (the SDK only re-registers when it has no
+            # client_info at all). An inconclusive probe (None) keeps the client.
+            if await self._client_registration_is_live(existing.client_id) is not False:
+                return
+            logger.warning(
+                "oauth: %s cached DCR client %s no longer exists at the IdP "
+                "(reaped?) — deleting and re-registering",
+                self._server_id,
+                existing.client_id,
+            )
+            await self._storage.delete_oauth_client(self._server_id, self._redirect_uri)
         asm = self._cached.authorization_server_metadata if self._cached else None
         if asm is None or asm.registration_endpoint is None:
             return
@@ -368,3 +424,17 @@ class PerUserOAuth:
             "oauth: cleared stale registration after IdP redirect_uri mismatch (server=%s)",
             self._server_id,
         )
+
+
+def _client_not_found(status_code: int, body: str) -> bool:
+    """True when an IdP authorize response says the client_id is unknown/deleted.
+
+    Keycloak returns HTTP 400 with a "Client not found" error page when the
+    client_id does not exist — verified against a reaped DCR client. We match
+    that signature only, and deliberately do NOT match the "Invalid parameter:
+    redirect_uri" 400, which is a different failure handled by
+    is_redirect_uri_mismatch / handle_redirect_uri_mismatch.
+    """
+    if status_code != 400:
+        return False
+    return "client not found" in body.lower()

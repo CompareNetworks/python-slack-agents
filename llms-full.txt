@@ -1561,6 +1561,16 @@ listed in the message and restart.
 **"Authentication timed out"** — the user didn't click the link within
 `auth_timeout`. They can re-ask the bot whenever they're ready.
 
+**Every user's "Authenticate" prompt suddenly times out** — the server's
+dynamic client registration was likely deleted at the IdP. Many Keycloak
+deployments reap DCR clients that have been idle for a couple of weeks, which
+leaves the agent's cached client registration pointing at a `client_id` the IdP
+no longer knows — every authorize with it lands on the IdP's "Client not found"
+page and the flow times out. The agent detects this on the next auth attempt (it
+probes the IdP authorize endpoint) and re-registers a fresh client
+automatically, so the next message recovers on its own. No manual intervention
+or storage edit is needed.
+
 **"<server> does not support dynamic client registration"** — the upstream
 authorization server doesn't speak RFC 7591, or it has a Client Registration
 Policy that rejects requests from your agent's host. Common Keycloak gates:
