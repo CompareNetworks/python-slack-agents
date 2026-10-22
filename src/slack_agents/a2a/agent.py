@@ -307,6 +307,17 @@ class Provider(BaseToolProvider):
             )
         except Exception as e:
             if self._oauth_mode:
+                from slack_agents.oauth.errors import (  # noqa: PLC0415
+                    find_sign_in_expired,
+                    sign_in_expired_tool_result,
+                )
+
+                expired = find_sign_in_expired(e)
+                if expired is not None:
+                    # The cached client's provider holds the dead token; rebuild
+                    # from storage once the user has signed in again.
+                    self._user_clients.pop(user_conversation_context["user_id"], None)
+                    return sign_in_expired_tool_result(expired, tool=name)
                 handled = await self._handle_oauth_error(e, name, user_conversation_context)
                 if handled is not None:
                     return handled

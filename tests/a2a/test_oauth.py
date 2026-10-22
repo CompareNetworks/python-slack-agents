@@ -456,3 +456,19 @@ async def test_a2a_oauth_reregisters_reaped_client(monkeypatch):
     assert row is not None
     assert row.client_id == "fresh-cid"
     await storage.close()
+
+
+async def test_call_tool_sign_in_expired_returns_clear_message(monkeypatch, store):
+    import json
+
+    from slack_agents.oauth.errors import SignInExpired
+
+    p, result = await _build_oauth_provider(
+        monkeypatch, store, SignInExpired("secure-agent", prompted=True)
+    )
+    payload = json.loads(result["content"])
+    assert result["is_error"] is True
+    assert payload["code"] == "sign_in_expired"
+    assert "sign in, then ask again" in payload["message"]
+    # The cached client holds the dead token; it is rebuilt after sign-in.
+    assert "U1" not in p._user_clients

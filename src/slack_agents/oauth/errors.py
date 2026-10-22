@@ -8,6 +8,7 @@ from typing import Any
 from slack_agents.tools.base import (
     ERROR_PERMISSION_DENIED,
     ERROR_SYSTEM_ERROR,
+    RECOVERY_ABORT,
     RECOVERY_CONTACT_ADMIN,
     RECOVERY_CONTACT_SUPPORT,
     RECOVERY_RETRY,
@@ -83,6 +84,17 @@ class ReauthRequired(Exception):
     """Interactive re-authentication is needed but cannot be performed in this
     context (e.g. an out-of-band background poller). Raised instead of posting a
     Slack auth prompt when a non-interactive OAuth flow hits a full re-auth."""
+
+
+class SignInExpired(ReauthRequired):
+    """The IdP refused the stored refresh token (e.g. the offline session reached
+    its maximum lifespan). The dead token has been deleted; in an interactive
+    context a fresh sign-in link has already been posted to the user."""
+
+    def __init__(self, server_id: str, *, prompted: bool) -> None:
+        self.server_id = server_id
+        self.prompted = prompted
+        super().__init__(f"sign-in to {server_id} expired (refresh token refused)")
 
 
 class UserAuthorizationDenied(Exception):
@@ -248,3 +260,30 @@ def message_from_tool_error(tr: ToolResult) -> str:
     except (json.JSONDecodeError, TypeError):
         return tr["content"]
     return payload.get("message") or tr["content"]
+
+
+def find_sign_in_expired(exc: BaseException) -> SignInExpired | None:
+    for x in flatten_exceptions(exc):
+        if isinstance(x, SignInExpired):
+            return x
+    return None
+
+
+def sign_in_expired_tool_result(expired: SignInExpired, *, tool: str | None = None) -> ToolResult:
+    """Tell the user their sign-in expired and to sign in and ask again.
+
+    The LLM must not retry in this turn: the user has to sign in first.
+    """
+    link = "I've just sent you a sign-in link (only you can see it). " if expired.prompted else ""
+    return make_tool_error(
+        error=ERROR_PERMISSION_DENIED,
+        code="sign_in_expired",
+        server=expired.server_id,
+        tool=tool,
+        recovery=RECOVERY_ABORT,
+        message=(
+            f"Your sign-in to {expired.server_id} has expired. {link}"
+            "Please sign in, then ask again. Tell the user exactly this and stop; "
+            "do not retry this tool in this turn."
+        ),
+    )
