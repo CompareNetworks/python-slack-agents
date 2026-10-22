@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.9.4] - 2026-10-21
+
+### Fixed
+
+- OAuth (MCP and A2A): an expired sign-in no longer blocks the request for 5 minutes and ends in `TimeoutError`. When the IdP refuses the stored refresh token (`invalid_grant`/`invalid_token`, e.g. Keycloak "Token is not active" once an offline session reaches its maximum lifespan), the dead token is deleted, the user is sent a fresh sign-in link straight away, and the call returns a `sign_in_expired` result telling the user to sign in and ask again. The sign-in completes in the background, so the next request uses the new token. Background pollers get the same `ReauthRequired` handling as before, without a prompt.
+
+- MCP over HTTP (`slack_agents.tools.mcp_http`): a closed or dead session is now reopened instead of failing every later call. Previously the session was opened once at startup and never replaced, so after the connection dropped each tool call failed at once with `anyio.ClosedResourceError` until the agent restarted. A call whose request could not be written to the closed transport (`ClosedResourceError`/`BrokenResourceError`, so it never reached the server) is retried once on a new session. When the connection closes after the request was sent, or the server no longer knows the session (`Session terminated`, e.g. after a server restart), the call fails without replay and the next call reconnects. The connection now runs in its own task, so the transport is always entered and exited by the same task.
+
 ## [0.9.3] - 2026-07-08
 
 ### Fixed

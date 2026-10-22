@@ -35,10 +35,12 @@ from slack_agents.oauth.discovery import PrmDiscovery
 from slack_agents.oauth.errors import (
     AuthSetupError,
     UserAuthorizationDenied,
+    find_sign_in_expired,
     find_user_authorization_denied,
     is_redirect_uri_mismatch,
     message_from_tool_error,
     record_error,
+    sign_in_expired_tool_result,
     user_denied_tool_result,
 )
 from slack_agents.oauth.flow import PerUserOAuth
@@ -254,6 +256,9 @@ class Provider(BaseToolProvider):
         try:
             return await self._call_mcp_with_token(user_conversation_context, tool_name, arguments)
         except Exception as e:
+            expired = find_sign_in_expired(e)
+            if expired is not None:
+                return sign_in_expired_tool_result(expired, tool=tool_name)
             # Specific recovery: IdP rejected our authorize request because the
             # client's registered redirect_uri doesn't match what we sent.
             # Means the cached `oauth_clients` row's redirect_uri is stale —

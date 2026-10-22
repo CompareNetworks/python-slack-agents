@@ -97,6 +97,14 @@ If they don't click within the configured `auth_timeout` (default 5 minutes),
 the agent surfaces a "timed out — please try again" error and the tool call
 ends. They can re-ask whenever they're ready and a fresh prompt appears.
 
+Tokens are refreshed silently. If the identity provider refuses the refresh
+token (`invalid_grant`/`invalid_token`, for example once a Keycloak offline
+session reaches its maximum lifespan), the agent deletes the dead token, sends
+a fresh "Authenticate" prompt straight away, and ends that tool call telling
+the user their sign-in expired and to sign in and ask again. The request does
+not wait for them; the sign-in completes in the background and their next
+request uses the new token.
+
 If the upstream tool later requires additional permissions (e.g. they had read
 access but are now trying to write), the same flow re-runs requesting the
 broader scope. Most identity providers auto-collapse the consent screen if the

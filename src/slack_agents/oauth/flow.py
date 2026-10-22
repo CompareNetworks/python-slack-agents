@@ -20,7 +20,7 @@ from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata
 
 from slack_agents import OAuthCallbackResult, PendingFlowsRegistry
 from slack_agents.oauth.discovery import DiscoveryResult, DiscoveryStrategy
-from slack_agents.oauth.errors import ReauthRequired, UserAuthorizationDenied
+from slack_agents.oauth.errors import ReauthRequired, SignInExpired, UserAuthorizationDenied
 from slack_agents.oauth.prompts import AuthPromptDeliveryError, send_auth_prompt
 from slack_agents.oauth.scopes import (
     OIDC_BASELINE_SCOPES,
@@ -32,6 +32,45 @@ from slack_agents.oauth.state import encode as encode_state
 from slack_agents.oauth.storage import DBTokenStorage
 
 logger = logging.getLogger(__name__)
+
+# Token-endpoint errors meaning the refresh token itself is dead (expired, revoked,
+# or its session gone): retrying can never succeed, only a new sign-in can.
+_DEAD_REFRESH_ERRORS = frozenset({"invalid_grant", "invalid_token"})
+
+
+class _PerUserProvider(OAuthClientProvider):
+    """OAuthClientProvider that fails fast when the IdP refuses the refresh token.
+
+    The SDK's default clears the token in memory and falls through to a full
+    authorization inside the same request, blocking it until the user signs in
+    or the callback wait times out. Instead the dead token is deleted at once,
+    `on_refresh_refused` starts a fresh sign-in, and `SignInExpired` ends the call.
+    """
+
+    def __init__(self, *args, on_refresh_refused, server_id: str, interactive: bool, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._on_refresh_refused = on_refresh_refused
+        self._server_id = server_id
+        self._interactive = interactive
+
+    async def _handle_refresh_response(self, response: httpx.Response) -> bool:
+        if response.status_code in (400, 401):
+            await response.aread()
+            try:
+                error = response.json().get("error")
+            except ValueError:
+                error = None
+            if error in _DEAD_REFRESH_ERRORS:
+                logger.warning(
+                    "oauth: %s refused the refresh token (HTTP %s %s) — sign-in expired",
+                    self._server_id,
+                    response.status_code,
+                    error,
+                )
+                self.context.clear_tokens()
+                await self._on_refresh_refused()
+                raise SignInExpired(self._server_id, prompted=self._interactive)
+        return await super()._handle_refresh_response(response)
 
 
 @dataclass
@@ -138,6 +177,7 @@ class PerUserOAuth:
         self._auth_timeout = auth_timeout
         self._discovery = discovery
         self._cached: DiscoveryResult | None = None
+        self._sign_ins: set[asyncio.Task] = set()
 
     def make_handle(self, user_id, channel_id, thread_id, *, interactive=True) -> PerUserHandle:
         return PerUserHandle(
@@ -200,7 +240,17 @@ class PerUserOAuth:
             response_types=["code"],
             scope=seed_scope,
         )
-        oauth = OAuthClientProvider(
+
+        async def on_refresh_refused() -> None:
+            scopes = await self.cached_scope_set(user_id)
+            await self._storage.delete_oauth_token(user_id, self._server_id)
+            if interactive:
+                self.start_sign_in(user_id, channel_id, thread_id, scopes)
+
+        oauth = _PerUserProvider(
+            on_refresh_refused=on_refresh_refused,
+            server_id=self._server_id,
+            interactive=interactive,
             server_url=self._server_url,
             client_metadata=client_metadata,
             storage=token_storage,
@@ -217,6 +267,42 @@ class PerUserOAuth:
         except Exception:
             logger.warning("oauth: pre-initialize for %s failed", self._server_id, exc_info=True)
         return oauth
+
+    def start_sign_in(
+        self, user_id: str, channel_id: str, thread_id: str | None, scopes: set[str]
+    ) -> None:
+        """Post the user a sign-in link now and finish the sign-in in the background.
+
+        The turn that hit the expired sign-in returns immediately; when the user
+        completes sign-in the new token is stored and their next request uses it.
+        """
+        task = asyncio.create_task(self._sign_in(user_id, channel_id, thread_id, scopes))
+        self._sign_ins.add(task)
+        task.add_done_callback(self._sign_ins.discard)
+
+    async def _sign_in(
+        self, user_id: str, channel_id: str, thread_id: str | None, scopes: set[str]
+    ) -> None:
+        try:
+            oauth = await self.build_provider(user_id, channel_id, thread_id)
+            # Ask for at least what the expired token had, so the new token keeps
+            # offline_access and the resource scopes.
+            requested = set((oauth.context.client_metadata.scope or "").split())
+            oauth.context.client_metadata.scope = " ".join(
+                sorted(OIDC_BASELINE_SCOPES | requested | scopes)
+            )
+            token_request = await oauth._perform_authorization()
+            async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as http:
+                response = await http.send(token_request)
+            await oauth._handle_token_response(response)
+            logger.info("oauth: %s user %s signed in again", self._server_id, user_id)
+        except Exception:
+            logger.warning(
+                "oauth: %s background sign-in for %s did not complete",
+                self._server_id,
+                user_id,
+                exc_info=True,
+            )
 
     def _apply_cached_metadata(self, oauth: OAuthClientProvider) -> None:
         if self._cached is None:
